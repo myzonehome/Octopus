@@ -216,4 +216,83 @@ public class PromptEnhancerTests
         cancelled.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => enhancer.EnhanceAsync(view, "x", cancelled.Token));
     }
+
+    [Fact]
+    public async Task Session_endpoint_recognizes_the_real_catalog_dialect_ids()
+    {
+        var (enhancer, _, _) = Create((_, _) => AnthropicText("x"));
+        var claudeEnv = new Dictionary<string, string> { ["ANTHROPIC_API_KEY"] = "sk-ant" };
+        var claude = Assert.Single(await enhancer.ListAsync(new PromptEnhancementSettings(), "claude-acp", claudeEnv, null));
+        Assert.Equal(PromptEnhancementEndpointStatus.Ready, claude.Status);
+        Assert.Equal(PromptEnhancementSources.Anthropic, claude.Protocol);
+
+        var codexEnv = new Dictionary<string, string> { ["OPENAI_API_KEY"] = "sk-oai" };
+        var codex = Assert.Single(await enhancer.ListAsync(new PromptEnhancementSettings(), "codex-acp", codexEnv, null));
+        Assert.Equal(PromptEnhancementEndpointStatus.Ready, codex.Status);
+        Assert.Equal(PromptEnhancementSources.OpenAi, codex.Protocol);
+    }
+
+    [Fact]
+    public async Task Session_endpoint_infers_the_provider_from_the_environment_for_other_agents()
+    {
+        var (enhancer, _, _) = Create((_, _) => AnthropicText("x"));
+        var env = new Dictionary<string, string> { ["ANTHROPIC_BASE_URL"] = "https://gw.example.com", ["ANTHROPIC_AUTH_TOKEN"] = "tok" };
+        var view = Assert.Single(await enhancer.ListAsync(new PromptEnhancementSettings(), "opencode", env, null));
+        Assert.Equal(PromptEnhancementEndpointStatus.Ready, view.Status);
+        Assert.Equal(PromptEnhancementSources.Anthropic, view.Protocol);
+        Assert.Equal("https://gw.example.com", view.BaseUrl);
+    }
+
+    [Fact]
+    public async Task A_timeout_while_reading_the_body_is_a_timeout_error_not_a_cancellation()
+    {
+        var secrets = new MemorySecretStore();
+        var handler = new SlowBodyHandler();
+        var enhancer = new PromptEnhancer(secrets, new HttpClient(handler));
+        var view = new PromptEnhancementEndpointView("e", "n", null, "https://x", "k", "m", null, null, null,
+            PromptEnhancementEndpointStatus.Ready, false, false);
+
+        var ex = await Assert.ThrowsAsync<PromptEnhancementException>(() => enhancer.EnhanceAsync(view, "x"));
+        Assert.Contains("超时", ex.Message);
+    }
+
+    private sealed class SlowBodyHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new HangingContent() });
+
+        private sealed class HangingContent : HttpContent
+        {
+            // The body read is what times out here (the caller is not cancelled): the enhancer must not report it as a cancel.
+            protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+                throw new OperationCanceledException();
+
+            protected override bool TryComputeLength(out long length)
+            {
+                length = -1;
+                return false;
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Error_bodies_are_redacted_so_a_key_echoed_by_the_provider_never_reaches_the_ui()
+    {
+        var (enhancer, _, _) = Create((_, _) => Json(HttpStatusCode.Unauthorized,
+            "{\"error\":\"Incorrect API key provided: sk-abcdef1234567890\"}"));
+        var view = new PromptEnhancementEndpointView("e", "n", null, "https://x", "sk-abcdef1234567890", "m", null, null, null,
+            PromptEnhancementEndpointStatus.Ready, false, false);
+
+        var ex = await Assert.ThrowsAsync<PromptEnhancementException>(() => enhancer.EnhanceAsync(view, "x"));
+        Assert.Contains("401", ex.Message);
+        Assert.DoesNotContain("sk-abcdef1234567890", ex.Message);
+    }
+
+    [Fact]
+    public void Endpoint_view_to_string_masks_the_key()
+    {
+        var view = new PromptEnhancementEndpointView("e", "n", null, "https://x", "sk-secret-value", "m", null, null, null,
+            PromptEnhancementEndpointStatus.Ready, false, false);
+        Assert.DoesNotContain("sk-secret-value", view.ToString());
+    }
 }

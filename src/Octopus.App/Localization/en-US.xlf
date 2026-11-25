@@ -1377,5 +1377,7 @@
     <unit id="AgentGuiEnhancePromptMissingKey"><segment><source>The default endpoint has no API key.</source></segment></unit>
     <unit id="AgentGuiEnhancePromptMissingUrl"><segment><source>The default endpoint has no base URL.</source></segment></unit>
     <unit id="AgentGuiEnhancePromptSwitch"><segment><source>Use endpoint</source></segment></unit>
+    <unit id="SettingsPromptEnhancementTestMissingKey"><segment><source>The API key is not set.</source></segment></unit>
+    <unit id="SettingsPromptEnhancementTestMissingUrl"><segment><source>The base URL is not set.</source></segment></unit>
   </file>
 </xliff>

@@ -187,7 +187,7 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
     {
         var key = KeyDraft.Trim();
         if (key.Length == 0 || !_secrets.IsAvailable) return;
-        await _secrets.SetAsync(PromptEnhancementSources.SecretService, _model.Id, key);
+        await _secrets.SetAsync(PromptEnhancementSources.SecretService, _model.Id, key).ConfigureAwait(true);
         KeyDraft = "";
         HasSavedKey = true;
     }
@@ -196,7 +196,7 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
     private async Task ClearKeyAsync()
     {
         if (!_secrets.IsAvailable) return;
-        await _secrets.DeleteAsync(PromptEnhancementSources.SecretService, _model.Id);
+        await _secrets.DeleteAsync(PromptEnhancementSources.SecretService, _model.Id).ConfigureAwait(true);
         HasSavedKey = false;
     }
 
@@ -211,18 +211,14 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
         try
         {
             var key = await _resolveKey(this).ConfigureAwait(false);
-            var view = new PromptEnhancementEndpointView(_model.Id, DisplayName, Protocol, BaseUrl, key, Model,
-                Temperature, MaxTokens, SystemPrompt,
-                string.IsNullOrWhiteSpace(BaseUrl) ? PromptEnhancementEndpointStatus.MissingBaseUrl
-                    : string.IsNullOrWhiteSpace(key) ? PromptEnhancementEndpointStatus.MissingKey
-                    : PromptEnhancementEndpointStatus.Ready,
-                IsSession: false, IsDefault: false);
+            // Exactly what the enhance button would call: defaults for an empty model/system prompt included.
+            var view = PromptEnhancer.Resolve(_model, key, isDefault: false);
             if (!view.IsAvailable)
             {
                 TestFailed = true;
                 TestResult = AppLangResources.Get(view.Status == PromptEnhancementEndpointStatus.MissingKey
-                    ? AppLangResourceKind.SettingsPromptEnhancementKeyUnset
-                    : AppLangResourceKind.SettingsPromptEnhancementBaseUrl);
+                    ? AppLangResourceKind.SettingsPromptEnhancementTestMissingKey
+                    : AppLangResourceKind.SettingsPromptEnhancementTestMissingUrl);
                 return;
             }
             await _enhancer.EnhanceAsync(view, TestPrompt);

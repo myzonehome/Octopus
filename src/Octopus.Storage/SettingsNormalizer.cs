@@ -20,6 +20,7 @@ internal static class SettingsNormalizer
             : settings.Workspaces.RootDirectory.Trim();
         settings.WorkspaceCleanup ??= new();
         settings.PromptEnhancement ??= new();
+        settings.PromptEnhancement.Endpoints ??= [];
         settings.WorkspaceCleanup.InactiveDays = settings.WorkspaceCleanup.InactiveDays <= 0
             ? WorkspaceCleanupSettings.DefaultInactiveDays
             : Math.Clamp(settings.WorkspaceCleanup.InactiveDays, WorkspaceCleanupSettings.MinInactiveDays, WorkspaceCleanupSettings.MaxInactiveDays);
@@ -52,7 +53,8 @@ internal static class SettingsNormalizer
         foreach (var endpoint in settings.PromptEnhancement.Endpoints)
         {
             endpoint.Name = endpoint.Name?.Trim() ?? "";
-            endpoint.BaseUrl = string.IsNullOrWhiteSpace(endpoint.BaseUrl) ? null : endpoint.BaseUrl.Trim().TrimEnd('/');
+            // Only whitespace is trimmed: cutting slashes here would eat the "//" of a URL as it is typed.
+            endpoint.BaseUrl = string.IsNullOrWhiteSpace(endpoint.BaseUrl) ? null : endpoint.BaseUrl.Trim();
             endpoint.Model = string.IsNullOrWhiteSpace(endpoint.Model) ? null : endpoint.Model.Trim();
             endpoint.SystemPrompt = string.IsNullOrWhiteSpace(endpoint.SystemPrompt) ? null : endpoint.SystemPrompt;
             if (!PromptEnhancementSources.IsKnownProtocol(endpoint.Protocol))
@@ -68,7 +70,8 @@ internal static class SettingsNormalizer
         {
             settings.PromptEnhancement.DefaultEndpointId = null;
         }
-        settings.Sidebar.Width = Clamp(settings.Sidebar.Width, 200, 480);        settings.Terminal.FontSize = Clamp(settings.Terminal.FontSize, 8, 32);
+        settings.Sidebar.Width = Clamp(settings.Sidebar.Width, 200, 480);
+        settings.Terminal.FontSize = Clamp(settings.Terminal.FontSize, 8, 32);
         settings.Terminal.ScrollbackLines = (int)Clamp(settings.Terminal.ScrollbackLines, 100, 100_000);
         settings.Terminal.VsCode = string.IsNullOrWhiteSpace(settings.Terminal.VsCode) ? null : settings.Terminal.VsCode.Trim();
         return settings;

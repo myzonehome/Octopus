@@ -50,7 +50,7 @@ PromptEnhancementSources { SecretService; SessionEndpointId; Anthropic; OpenAi; 
 ## 解析与优先级
 
 - 端点列表 = 「跟随智能体接口」（虚拟） + 用户端点。
-- 会话条目：Claude 系方言（claude/codebuddy）用 `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`（token 走 Bearer），模型取会话选中模型或 `ANTHROPIC_*_MODEL`；Codex 方言用 `OPENAI_BASE_URL`/`OPENAI_API_KEY`；其它方言 `UnsupportedDialect`。
+- 会话条目：方言 id 以 `claude`/`codebuddy` 开头（目录里实际是 `claude-acp`）时用 `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`（token 走 Bearer），模型取会话选中模型或 `ANTHROPIC_*_MODEL`；方言以 `codex` 开头（实际 `codex-acp`）用 `OPENAI_BASE_URL`/`OPENAI_API_KEY`；方言无法判断时按环境变量族推断（存在 `ANTHROPIC_*` 走 Anthropic，存在 `OPENAI_*` 走 OpenAI），都没有则 `UnsupportedDialect`。
 - 用户端点：Protocol 缺省 anthropic；BaseUrl 空 → `MissingBaseUrl`；钥匙串无密钥 → `MissingKey`；模型空用协议默认（`claude-sonnet-5-5` / `gpt-5.5`）。
 - **不静默降级**：默认端点不可用则按钮禁用并说明缺什么。
 
@@ -58,7 +58,7 @@ PromptEnhancementSources { SecretService; SessionEndpointId; Anthropic; OpenAi; 
 
 - Anthropic Messages：`POST {base}/v1/messages`，`anthropic-version: 2023-06-01`，`x-api-key` 或 Bearer；响应取 `content[*].text`。
 - OpenAI Chat Completions：`POST {base}/v1/chat/completions`，Bearer；响应取 `choices[0].message.content`。
-- 60s 超时；非 2xx 抛 `PromptEnhancementException`（含状态码与 300 字正文）；空结果视为失败；去除整体代码围栏与成对引号。
+- 60s 超时（读取响应正文阶段的超时同样映射为超时错误，不当作取消）；非 2xx 抛 `PromptEnhancementException`（含状态码与 300 字正文，正文中的密钥形态会被脱敏）；空结果视为失败；去除整体代码围栏与成对引号。
 
 ## UI
 

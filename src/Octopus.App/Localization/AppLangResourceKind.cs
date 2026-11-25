@@ -1405,4 +1405,6 @@ public enum AppLangResourceKind
     AgentGuiEnhancePromptMissingKey,
     AgentGuiEnhancePromptMissingUrl,
     AgentGuiEnhancePromptSwitch,
+    SettingsPromptEnhancementTestMissingKey,
+    SettingsPromptEnhancementTestMissingUrl,
 }

@@ -300,7 +300,7 @@ public class SettingsStoreTests
         reloaded.Load();
         var e = Assert.Single(reloaded.Current.PromptEnhancement.Endpoints);
         Assert.Equal("a", e.Id);
-        Assert.Equal("https://x/v1", e.BaseUrl);
+        Assert.Equal("https://x/v1/", e.BaseUrl); // kept as typed: the editor must accept "https://" while typing
         Assert.Null(reloaded.Current.PromptEnhancement.DefaultEndpointId);
     }
 
@@ -334,6 +334,18 @@ public class SettingsStoreTests
         Assert.Equal("m", e.Model);
         Assert.Equal(1.2, e.Temperature);
         Assert.Equal("a", reloaded.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+
+    [Fact]
+    public void Prompt_enhancement_with_a_null_endpoint_list_loads_empty_instead_of_throwing()
+    {
+        using var paths = new TempPaths();
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.SettingsFile)!);
+        File.WriteAllText(paths.SettingsFile, "{\"Version\":1,\"PromptEnhancement\":{\"Endpoints\":null}}");
+        using var store = new JsonSettingsStore(paths);
+        store.Load();
+        Assert.Empty(store.Current.PromptEnhancement.Endpoints);
     }
 
     [Fact]

@@ -1378,5 +1378,7 @@
     <unit id="AgentGuiEnhancePromptMissingKey"><segment><source>The default endpoint has no API key.</source><target state="translated">默认接口缺少 API 密钥。</target></segment></unit>
     <unit id="AgentGuiEnhancePromptMissingUrl"><segment><source>The default endpoint has no base URL.</source><target state="translated">默认接口缺少接口地址。</target></segment></unit>
     <unit id="AgentGuiEnhancePromptSwitch"><segment><source>Use endpoint</source><target state="translated">使用接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTestMissingKey"><segment><source>The API key is not set.</source><target state="translated">尚未设置 API 密钥。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTestMissingUrl"><segment><source>The base URL is not set.</source><target state="translated">尚未填写接口地址。</target></segment></unit>
   </file>
 </xliff>

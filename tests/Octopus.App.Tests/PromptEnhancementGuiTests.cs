@@ -1,4 +1,5 @@
 using Avalonia.Controls;
+using Avalonia.VisualTree;
 using Avalonia.Headless.XUnit;
 using Octopus.Agents.PromptEnhancement;
 using Octopus.App.AgentGui;
@@ -202,5 +203,44 @@ public class PromptEnhancementGuiTests
         vm.InputText = "a prompt";
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
         Assert.True(enhance.IsEffectivelyEnabled);
+    }
+
+    [AvaloniaFact]
+    public async Task A_successful_refresh_clears_an_earlier_error()
+    {
+        var (vm, _) = await OpenAsync();
+        vm.InputText = "a prompt";
+        Enhancer.Enhance = (_, _, _) => throw new PromptEnhancementException("接口返回 500：boom");
+        await vm.EnhancePromptCommand.ExecuteAsync(null);
+        Assert.Contains("500", vm.PromptEnhancementError);
+
+        await vm.RefreshEnhancementEndpointAsync();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Null(vm.PromptEnhancementError);
+        Assert.True(vm.CanEnhancePrompt);
+    }
+
+    [AvaloniaFact]
+    public async Task The_right_click_menu_lists_the_endpoints_and_choosing_one_changes_the_default()
+    {
+        var (vm, view) = await OpenAsync();
+        var settings = AppHost.Get<ISettingsStore>();
+        settings.Update(s => s.PromptEnhancement.Endpoints = [new PromptEnhancementEndpoint { Id = "ep1", Name = "Office" }]);
+        await vm.RefreshEnhancementEndpointAsync();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(2, vm.EnhancementEndpoints.Count);
+        var button = view.FindControl<TKCode.Arc.Button>("EnhancePromptButton")!;
+        var menu = button.ContextMenu!;
+        Assert.NotNull(menu);
+        var items = menu.Items.OfType<MenuItem>().Where(i => i.Command is not null).ToList();
+        Assert.Equal(2, items.Count); // the agent session + the saved endpoint
+        Assert.Contains(items, i => i.IsChecked); // the current default is marked
+        items.Single(i => i.Header as string == "Office").Command!.Execute(null);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("ep1", settings.Current.PromptEnhancement.DefaultEndpointId);
+        menu.Close();
     }
 }

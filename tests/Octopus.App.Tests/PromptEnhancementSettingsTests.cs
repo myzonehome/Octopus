@@ -15,7 +15,6 @@ public class PromptEnhancementSettingsTests
 {
     [AvaloniaFact]
     public void View_model_answers_a_default_endpoint_query()
-
     {
         var (vm, _, _, _) = Create();
         Assert.False(vm.HasEndpoints);
@@ -146,5 +145,46 @@ public class PromptEnhancementSettingsTests
         await card.TestCommand.ExecuteAsync(null);
         Assert.False(card.TestFailed);
         Assert.False(string.IsNullOrWhiteSpace(card.TestResult));
+    }
+
+    [AvaloniaFact]
+    public async Task Test_connection_uses_the_same_defaults_as_the_enhance_button()
+    {
+        var (vm, _, secrets, enhancer) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        card.BaseUrl = "https://gw.example.com/v1";
+        card.KeyDraft = "k";
+        await card.SaveKeyCommand.ExecuteAsync(null);
+
+        PromptEnhancementEndpointView? seen = null;
+        enhancer.Enhance = view =>
+        {
+            seen = view;
+            return Task.FromResult("OK");
+        };
+        await card.TestCommand.ExecuteAsync(null);
+
+        Assert.NotNull(seen);
+        Assert.False(string.IsNullOrWhiteSpace(seen!.Model)); // resolved to the provider default, as enhancement does
+        Assert.Null(seen.SystemPrompt);                       // the built-in instructions then apply
+        Assert.Equal(PromptEnhancementSources.Anthropic, seen.Protocol);
+        Assert.False(card.TestFailed);
+    }
+
+    [AvaloniaFact]
+    public async Task Typing_a_base_url_keeps_its_slashes()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+
+        foreach (var prefix in new[] { "h", "ht", "htt", "http", "https", "https:", "https:/", "https://", "https://x", "https://x/" })
+        {
+            card.BaseUrl = prefix;
+        }
+
+        Assert.Equal("https://x/", card.BaseUrl);
+        Assert.Equal("https://x/", Assert.Single(settings.Current.PromptEnhancement.Endpoints).BaseUrl);
     }
 }

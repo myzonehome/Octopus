@@ -207,6 +207,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     private CancellationTokenSource? _enhanceCts;
     private bool _isEnhancingPrompt;
     private string? _promptEnhancementError;
+    private string _enhancementSignature = "";
 
     private IAcpSession? _session;
     private AssistantTurnItem? _activeTurn;
@@ -627,27 +628,60 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         EnhancePromptCommand.NotifyCanExecuteChanged();
     }
 
-    private void OnEnhancementSettingsChanged(object? sender, EventArgs e) => _ = Task.Run(RefreshEnhancementEndpointAsync);
+    private void OnEnhancementSettingsChanged(object? sender, EventArgs e)
+    {
+        // Fonts, widths and the like change with every keystroke elsewhere in Settings; only endpoints matter here,
+        // and each refresh costs a keystore read per endpoint.
+        if (EnhancementSignature(_settings.Current.PromptEnhancement) != _enhancementSignature)
+        {
+            UiContext.Run(() => _ = RefreshEnhancementEndpointAsync());
+        }
+    }
+
+    private static string EnhancementSignature(PromptEnhancementSettings settings) =>
+        (settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId) + "|" +
+        string.Join(",", settings.Endpoints.Select(e => $"{e.Id}:{e.Protocol}:{e.BaseUrl}:{e.Model}"));
+
+    private static PromptEnhancementSettings Snapshot(PromptEnhancementSettings settings) => new()
+    {
+        DefaultEndpointId = settings.DefaultEndpointId,
+        Endpoints = settings.Endpoints.Select(e => new PromptEnhancementEndpoint
+        {
+            Id = e.Id,
+            Name = e.Name,
+            Protocol = e.Protocol,
+            BaseUrl = e.BaseUrl,
+            Model = e.Model,
+            Temperature = e.Temperature,
+            MaxTokens = e.MaxTokens,
+            SystemPrompt = e.SystemPrompt,
+        }).ToList(),
+    };
 
     /// <summary>
     /// Asks the enhancer which endpoint the button uses for this session, and all endpoints for the composer's menu.
-    /// Runs again when the settings change; a failure leaves the button unavailable rather than guessing.
+    /// The settings are copied on the UI thread (they are mutated in place elsewhere) and the keystore reads happen
+    /// off it; a failure leaves the button unavailable rather than guessing.
     /// </summary>
     internal async Task RefreshEnhancementEndpointAsync()
     {
         if (_disposed || _promptEnhancer is null || _launchPlan is null) return;
+        var settings = Snapshot(_settings.Current.PromptEnhancement);
+        var dialect = _definition.Acp?.Dialect;
+        var env = _launchPlan.Environment;
+        var model = Composer.SelectedModelId;
         try
         {
-            var settings = _settings.Current.PromptEnhancement;
-            var dialect = _definition.Acp?.Dialect;
-            var env = _launchPlan.Environment;
-            var model = Composer.SelectedModelId;
-            var endpoint = await _promptEnhancer.ResolveDefaultAsync(settings, dialect, env, model).ConfigureAwait(false);
-            var all = await _promptEnhancer.ListAsync(settings, dialect, env, model).ConfigureAwait(false);
+            var all = await Task.Run(
+                () => _promptEnhancer.ListAsync(settings, dialect, env, model)).ConfigureAwait(false);
+            var defaultId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
+            var endpoint = all.FirstOrDefault(v => v.Id == defaultId);
             UiContext.Run(() =>
             {
                 if (_disposed) return;
                 _enhancementEndpoint = endpoint;
+                _enhancementSignature = EnhancementSignature(settings);
+                PromptEnhancementError = null;
                 EnhancementEndpoints = all
                     .Select(v => new PromptEnhancementEndpointOption(v.Id, EnhancementLabel(v), v.IsAvailable, v.IsDefault,
                         new RelayCommand(() => SetDefaultEnhancementEndpoint(v.Id))))
@@ -706,12 +740,16 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         }
         catch (Exception e)
         {
-            UiContext.Run(() => PromptEnhancementError = e.Message);
+            UiContext.Run(() =>
+            {
+                if (!_disposed) PromptEnhancementError = e.Message;
+            });
         }
         finally
         {
             UiContext.Run(() =>
             {
+                if (_disposed) return;
                 if (ReferenceEquals(_enhanceCts, cts)) _enhanceCts = null;
                 IsEnhancingPrompt = false;
             });
@@ -938,7 +976,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
                 State = AgentGuiState.Ready;
                 RefreshDiagnostics();
             });
-            _ = Task.Run(RefreshEnhancementEndpointAsync);
+            _ = RefreshEnhancementEndpointAsync();
 
             // Discover third-party gateway/catalog models in the background so custom API models show up in the GUI picker.
             if (_modelDiscovery is not null
@@ -3464,6 +3502,9 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         _turnCts?.Cancel();
         _enhanceCts?.Cancel();
         _settings.Changed -= OnEnhancementSettingsChanged;
+        // Both carry API keys: let them go with the tab.
+        _launchPlan = null;
+        _enhancementEndpoint = null;
         var old = Interlocked.Exchange(ref _session, null);
         if (old is not null)
         {

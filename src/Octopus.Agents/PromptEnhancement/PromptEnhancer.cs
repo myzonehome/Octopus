@@ -34,6 +34,12 @@ public sealed record PromptEnhancementEndpointView(
     bool IsDefault)
 {
     public bool IsAvailable => Status == PromptEnhancementEndpointStatus.Ready;
+
+    /// <summary>Never prints the key: a record's default text would, and that text ends up in logs and assertions.</summary>
+    public override string ToString() =>
+        $"PromptEnhancementEndpointView {{ Id = {Id}, Name = {Name}, Protocol = {Protocol}, BaseUrl = {BaseUrl}, " +
+        $"ApiKey = {(string.IsNullOrEmpty(ApiKey) ? "null" : "***")}, Model = {Model}, Status = {Status}, " +
+        $"IsSession = {IsSession}, IsDefault = {IsDefault} }}";
 }
 
 public sealed class PromptEnhancementException(string message) : Exception(message);
@@ -71,7 +77,7 @@ public interface IPromptEnhancer
 /// Calls Anthropic Messages or OpenAI Chat Completions directly with <see cref="HttpClient"/> and <see cref="JsonNode"/>:
 /// no SDK, NativeAOT safe. Keys come from the keystore, never from settings or logs.
 /// </summary>
-public sealed class PromptEnhancer : IPromptEnhancer
+public sealed partial class PromptEnhancer : IPromptEnhancer
 {
     public const string SessionName = "Follow agent";
     public static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(60);
@@ -118,7 +124,7 @@ public sealed class PromptEnhancer : IPromptEnhancer
             var key = _secrets.IsAvailable
                 ? await _secrets.GetAsync(PromptEnhancementSources.SecretService, endpoint.Id, cancellationToken).ConfigureAwait(false)
                 : null;
-            list.Add(ResolveCustom(endpoint, key, isDefault: endpoint.Id == defaultId));
+            list.Add(Resolve(endpoint, key, isDefault: endpoint.Id == defaultId));
         }
 
         return list;
@@ -143,7 +149,13 @@ public sealed class PromptEnhancer : IPromptEnhancer
             new(PromptEnhancementSources.SessionEndpointId, SessionName, protocol, null, null, model, null, null, null,
                 status, IsSession: true, isDefault);
 
-        if (IsClaudeDialect(dialect))
+        // The dialect names the provider; agents whose dialect is neutral are judged by the variables they run with.
+        bool? isAnthropic = IsClaudeDialect(dialect) ? true
+            : IsCodexDialect(dialect) ? false
+            : IsAnthropicEnvironment(env) && !IsOpenAiEnvironment(env) ? true
+            : IsOpenAiEnvironment(env) && !IsAnthropicEnvironment(env) ? false
+            : null;
+        if (isAnthropic == true)
         {
             var baseUrl = FirstNonEmpty(Get(env, "ANTHROPIC_BASE_URL")) ?? AnthropicUrl;
             var apiKey = FirstNonEmpty(Get(env, "ANTHROPIC_API_KEY"));
@@ -159,7 +171,7 @@ public sealed class PromptEnhancer : IPromptEnhancer
                 PromptEnhancementEndpointStatus.Ready, IsSession: true, isDefault);
         }
 
-        if (IsCodexDialect(dialect))
+        if (isAnthropic == false)
         {
             var baseUrl = FirstNonEmpty(Get(env, "OPENAI_BASE_URL")) ?? OpenAiUrl;
             var apiKey = FirstNonEmpty(Get(env, "OPENAI_API_KEY"));
@@ -173,7 +185,8 @@ public sealed class PromptEnhancer : IPromptEnhancer
         return Unavailable(null, PromptEnhancementEndpointStatus.UnsupportedDialect);
     }
 
-    private static PromptEnhancementEndpointView ResolveCustom(PromptEnhancementEndpoint endpoint, string? key, bool isDefault)
+    /// <summary>Restores the view of a saved endpoint (the settings page's connection test uses the same rules).</summary>
+    public static PromptEnhancementEndpointView Resolve(PromptEnhancementEndpoint endpoint, string? key, bool isDefault)
     {
         var protocol = endpoint.Protocol ?? PromptEnhancementSources.Anthropic;
         var status = string.IsNullOrWhiteSpace(endpoint.BaseUrl) ? PromptEnhancementEndpointStatus.MissingBaseUrl
@@ -184,12 +197,20 @@ public sealed class PromptEnhancer : IPromptEnhancer
             endpoint.Temperature, endpoint.MaxTokens, endpoint.SystemPrompt, status, IsSession: false, isDefault);
     }
 
+    // The catalog ids are claude-acp / codex-acp; prefixes also cover claude / codex / codebuddy variants.
     private static bool IsClaudeDialect(string? dialect) =>
-        string.Equals(dialect, "claude", StringComparison.OrdinalIgnoreCase)
-        || string.Equals(dialect, "codebuddy", StringComparison.OrdinalIgnoreCase);
+        dialect is not null && (dialect.StartsWith("claude", StringComparison.OrdinalIgnoreCase)
+            || dialect.StartsWith("codebuddy", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsCodexDialect(string? dialect) =>
-        string.Equals(dialect, "codex", StringComparison.OrdinalIgnoreCase);
+        dialect is not null && dialect.StartsWith("codex", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Agents whose dialect says nothing about the provider: their environment names it.</summary>
+    private static bool IsAnthropicEnvironment(IReadOnlyDictionary<string, string> env) =>
+        env.Keys.Any(k => k.StartsWith("ANTHROPIC_", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsOpenAiEnvironment(IReadOnlyDictionary<string, string> env) =>
+        env.Keys.Any(k => k.StartsWith("OPENAI_", StringComparison.OrdinalIgnoreCase));
 
     public async Task<string> EnhanceAsync(
         PromptEnhancementEndpointView endpoint, string prompt, CancellationToken cancellationToken = default)
@@ -246,11 +267,22 @@ public sealed class PromptEnhancer : IPromptEnhancer
 
         using (response)
         {
-            var text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            string text;
+            try
+            {
+                text = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException e) when (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(e.Message, e, cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                throw new PromptEnhancementException("请求超时。");
+            }
             if (!response.IsSuccessStatusCode)
             {
-                var detail = text.Length > 300 ? text[..300] : text;
-                throw new PromptEnhancementException($"接口返回 {(int)response.StatusCode}：{detail}");
+                throw new PromptEnhancementException($"接口返回 {(int)response.StatusCode}：{Redact(text, endpoint.ApiKey)}");
             }
 
             var result = Clean(isOpenAi ? ReadOpenAiText(text) : ReadAnthropicText(text));
@@ -337,6 +369,24 @@ public sealed class PromptEnhancer : IPromptEnhancer
         }
         return trimmed;
     }
+
+    /// <summary>
+    /// Providers echo the offending key in authorization errors ("Incorrect API key provided: sk-…"). The detail goes to
+    /// a tooltip and the settings page, so anything key-shaped is cut before it can reach either.
+    /// </summary>
+    private static string Redact(string text, string? apiKey)
+    {
+        var detail = text.Length > 300 ? text[..300] : text;
+        if (apiKey is { Length: >= 8 })
+        {
+            var raw = apiKey.StartsWith("bearer:", StringComparison.Ordinal) ? apiKey["bearer:".Length..] : apiKey;
+            if (raw.Length >= 8) detail = detail.Replace(raw, "***", StringComparison.Ordinal);
+        }
+        return KeyPattern().Replace(detail, "***");
+    }
+
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?:sk|pk|rk)[-_][A-Za-z0-9_\-]{4,}|\bBearer\s+[A-Za-z0-9._\-]{8,}", System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex KeyPattern();
 
     private static string? Get(IReadOnlyDictionary<string, string> env, string name) =>
         env.TryGetValue(name, out var value) ? value : null;

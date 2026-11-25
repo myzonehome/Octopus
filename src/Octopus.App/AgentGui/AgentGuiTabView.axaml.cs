@@ -7,6 +7,7 @@ using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
+using Octopus.App.Localization;
 using Octopus.App.Workspace;
 using TKCode.Arc;
 
@@ -31,10 +32,44 @@ public partial class AgentGuiTabView : UserControl, ITabContent
         ModelSearchBox.AddHandler(KeyDownEvent, OnModelSearchKeyDown, RoutingStrategies.Tunnel);
         TimelineList.TemplateApplied += OnTimelineTemplateApplied;
         ModelPickerPopover.PropertyChanged += OnModelPopoverPropertyChanged;
+        // Built when opened: the endpoint list changes with Settings, and a ContextMenu does not inherit DataContext.
+        EnhancePromptButton.ContextMenu = new Avalonia.Controls.ContextMenu();
+        EnhancePromptButton.ContextMenu.Opening += (_, _) => PopulateEnhanceMenu();
 
         DragDrop.SetAllowDrop(this, true);
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDropAsync);
+    }
+
+
+    private void OnModelPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(AgentGuiTabViewModel.EnhancementEndpoints)) PopulateEnhanceMenu();
+    }
+
+    private void PopulateEnhanceMenu()
+    {
+        var menu = EnhancePromptButton.ContextMenu;
+        var model = _model;
+        if (menu is null || model is null) return;
+        menu.Items.Clear();
+        menu.Items.Add(new MenuItem
+        {
+            Header = AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptSwitch),
+            IsEnabled = false,
+        });
+        menu.Items.Add(new Separator());
+        foreach (var option in model.EnhancementEndpoints)
+        {
+            menu.Items.Add(new MenuItem
+            {
+                Header = option.Label,
+                Command = option.SelectCommand,
+                ToggleType = MenuItemToggleType.Radio,
+                IsChecked = option.IsDefault,
+                IsEnabled = option.IsAvailable || option.IsDefault,
+            });
+        }
     }
 
     private void OnTimelineTemplateApplied(object? sender, TemplateAppliedEventArgs e)
@@ -85,14 +120,18 @@ public partial class AgentGuiTabView : UserControl, ITabContent
         base.OnDataContextChanged(e);
         if (_model is not null)
         {
+            _model.PropertyChanged -= OnModelPropertyChanged;
             _model.ScrollToBottomRequested -= OnScrollToBottom;
             _model.FocusComposerRequested -= OnFocusComposerRequested;
+            _model.PropertyChanged -= OnModelPropertyChanged;
         }
         _model = DataContext as AgentGuiTabViewModel;
         if (_model is not null)
         {
             _model.ScrollToBottomRequested += OnScrollToBottom;
             _model.FocusComposerRequested += OnFocusComposerRequested;
+            _model.PropertyChanged += OnModelPropertyChanged;
+            PopulateEnhanceMenu();
             TryStartIfVisible();
         }
     }
