@@ -2802,6 +2802,37 @@
                                         <TextBlock FontSize="{arc:ArcDesignTokenResource TypeXS}" Text="{l:AppLangResource AgentGuiSendNow}" VerticalAlignment="Center" />
                                     </StackPanel>
                                 </arc:Button>
+                                <arc:Button x:Name="EnhancePromptButton"
+                                            Classes="icon" Variant="Ghost"
+                                            Margin="0,0,2,0" VerticalAlignment="Center"
+                                            Command="{Binding EnhancePromptCommand}"
+                                            AutomationProperties.Name="{l:AppLangResource AgentGuiEnhancePrompt}"
+                                            arc:Tooltip.Tip="{Binding EnhancePromptTooltip}">
+                                    <Panel>
+                                        <lucide:LucideIcon Kind="Sparkles" Size="13" IsVisible="{Binding !IsEnhancingPrompt}" />
+                                        <arc:ArcSpinner Width="12" Height="12" IsVisible="{Binding IsEnhancingPrompt}" />
+                                    </Panel>
+                                    <arc:Button.ContextMenu>
+                                        <ContextMenu x:Name="EnhanceEndpointMenu">
+                                            <MenuItem Header="{l:AppLangResource AgentGuiEnhancePromptSwitch}" IsEnabled="False" />
+                                            <Separator />
+                                            <ItemsControl ItemsSource="{Binding EnhancementEndpoints}" Margin="4,2">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate x:DataType="gui:PromptEnhancementEndpointOption">
+                                                        <Button Classes="row" Command="{Binding SelectCommand}" Padding="8,5">
+                                                            <StackPanel Orientation="Horizontal" Spacing="6">
+                                                                <lucide:LucideIcon Kind="Check" Size="11"
+                                                                                   IsVisible="{Binding IsDefault}"
+                                                                                   Foreground="{arc:ArcDesignTokenResource AccentStrong}" />
+                                                                <TextBlock Text="{Binding Label}" />
+                                                            </StackPanel>
+                                                        </Button>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ContextMenu>
+                                    </arc:Button.ContextMenu>
+                                </arc:Button>
                                 <arc:Button x:Name="SendButton"
                                             Size="Small"
                                             Command="{Binding SendPromptCommand}"

@@ -649,7 +649,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
                 if (_disposed) return;
                 _enhancementEndpoint = endpoint;
                 EnhancementEndpoints = all
-                    .Select(v => new PromptEnhancementEndpointOption(v.Id, EnhancementLabel(v), v.IsAvailable, v.IsDefault))
+                    .Select(v => new PromptEnhancementEndpointOption(v.Id, EnhancementLabel(v), v.IsAvailable, v.IsDefault,
+                        new RelayCommand(() => SetDefaultEnhancementEndpoint(v.Id))))
                     .ToList();
                 OnPropertyChanged(nameof(EnhancementEndpoints));
                 OnEnhancementAvailabilityChanged();
@@ -3495,4 +3496,5 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
 }
 
 /// <summary>One entry of the composer's "use endpoint" menu for prompt enhancement.</summary>
-public sealed record PromptEnhancementEndpointOption(string Id, string Label, bool IsAvailable, bool IsDefault);
+public sealed record PromptEnhancementEndpointOption(
+    string Id, string Label, bool IsAvailable, bool IsDefault, IRelayCommand SelectCommand);

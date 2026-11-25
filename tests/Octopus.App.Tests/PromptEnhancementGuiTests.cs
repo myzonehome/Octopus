@@ -1,3 +1,4 @@
+using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
 using Octopus.Agents.PromptEnhancement;
 using Octopus.App.AgentGui;
@@ -185,5 +186,21 @@ public class PromptEnhancementGuiTests
 
         vm.SetDefaultEnhancementEndpointCommand.Execute(PromptEnhancementSources.SessionEndpointId);
         Assert.Null(settings.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    [AvaloniaFact]
+    public async Task Enhance_button_sits_immediately_before_the_send_button_and_spins_while_running()
+    {
+        var (vm, view) = await OpenAsync();
+        var enhance = view.FindControl<TKCode.Arc.Button>("EnhancePromptButton")!;
+        var send = view.FindControl<TKCode.Arc.Button>("SendButton")!;
+        var panel = Assert.IsType<Avalonia.Controls.StackPanel>(enhance.Parent);
+        Assert.Same(panel, send.Parent);
+        Assert.Equal(panel.Children.IndexOf(send), panel.Children.IndexOf(enhance) + 1);
+        Assert.False(enhance.IsEffectivelyEnabled);
+
+        vm.InputText = "a prompt";
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.True(enhance.IsEffectivelyEnabled);
     }
 }
