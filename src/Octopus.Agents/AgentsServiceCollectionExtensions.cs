@@ -2,6 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Octopus.Agents.Accounts;
 using Octopus.Agents.Probes;
+using Octopus.Agents.PromptEnhancement;
 using Octopus.Agents.Sessions;
 using Octopus.Agents.Signals;
 using Octopus.Platform;
@@ -25,6 +26,7 @@ public static class AgentsServiceCollectionExtensions
         services.AddSingleton<IAgentScanner, AgentScanner>();
         services.AddSingleton<IAgentCommandCompiler, AgentCommandCompiler>();
         services.AddSingleton<IModelDiscovery, ModelDiscovery>();
+        services.AddSingleton<IPromptEnhancer, PromptEnhancer>();
         services.AddSingleton<ISystemProxy, SystemProxy>();
         services.AddSingleton<ISignalHub, SignalHub>();
         services.AddSingleton<ISignalAttachPlanner, SignalAttachPlanner>();
