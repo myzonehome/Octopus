@@ -12,6 +12,7 @@ using Octopus.Acp.Protocol;
 using Octopus.Acp.Transport;
 using Octopus.Agents;
 using Octopus.Agents.Accounts;
+using Octopus.Agents.PromptEnhancement;
 using Octopus.Agents.Subagents;
 using Octopus.App.Activity;
 using Octopus.App.Common;
@@ -22,6 +23,7 @@ using Octopus.App.Sidebar;
 using Octopus.App.Workspace;
 using Octopus.Core.Agents;
 using Octopus.Core.Projects;
+using Octopus.Core.Settings;
 using Octopus.Storage;
 using TKCode.Arc.Icons.Lucide;
 
@@ -196,6 +198,15 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     private readonly Func<IWorkspaceCommands?>? _workspaceCommands;
     private readonly ISubagentService? _subagents;
     private readonly IModelDiscovery? _modelDiscovery;
+    private readonly IPromptEnhancer? _promptEnhancer;
+
+    /// <summary>The launch plan of the running session: its environment holds the keys the "follow agent" endpoint uses.</summary>
+    private AcpLaunchPlan? _launchPlan;
+    private PromptEnhancementEndpointView? _enhancementEndpoint;
+    private IReadOnlyList<string> _enhancementEndpointIds = [];
+    private CancellationTokenSource? _enhanceCts;
+    private bool _isEnhancingPrompt;
+    private string? _promptEnhancementError;
 
     private IAcpSession? _session;
     private AssistantTurnItem? _activeTurn;
@@ -262,7 +273,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         IAgentAccountService? accounts = null,
         Func<IWorkspaceCommands?>? workspaceCommands = null,
         ISubagentService? subagents = null,
-        IModelDiscovery? modelDiscovery = null)
+        IModelDiscovery? modelDiscovery = null,
+        IPromptEnhancer? promptEnhancer = null)
     {
         _project = project;
         _item = item;
@@ -281,6 +293,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         _workspaceCommands = workspaceCommands;
         _subagents = subagents;
         _modelDiscovery = modelDiscovery;
+        _promptEnhancer = promptEnhancer;
+        if (promptEnhancer is not null) _settings.Changed += OnEnhancementSettingsChanged;
 
         var profile = settings.Current.Agents.ProfileOf(definition.Id);
         var effectivePerm = compiler.ResolvePermission(definition, profile, settings.Current.Agents.DefaultPermission)
@@ -554,6 +568,165 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     public string SendButtonTooltip => IsTurnActive
         ? AppLangResources.Get(AppLangResourceKind.AgentGuiQueuePromptTip)
         : AppLangResources.Get(AppLangResourceKind.AgentGuiSend);
+    /// <summary>The prompt enhancement endpoints of the last refresh: id, label and whether the button can use it.</summary>
+    public IReadOnlyList<PromptEnhancementEndpointOption> EnhancementEndpoints { get; private set; } = [];
+
+    public bool IsEnhancingPrompt
+    {
+        get => _isEnhancingPrompt;
+        private set
+        {
+            if (SetProperty(ref _isEnhancingPrompt, value)) OnEnhancementAvailabilityChanged();
+        }
+    }
+
+    public string? PromptEnhancementError
+    {
+        get => _promptEnhancementError;
+        private set
+        {
+            if (SetProperty(ref _promptEnhancementError, value)) OnEnhancementAvailabilityChanged();
+        }
+    }
+
+    /// <summary>Usable while a request runs too: the second click cancels it.</summary>
+    public bool CanEnhancePrompt => _isEnhancingPrompt || (CanSend && _enhancementEndpoint?.IsAvailable == true);
+
+    public string EnhancePromptTooltip
+    {
+        get
+        {
+            if (_isEnhancingPrompt) return AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptWorking);
+            if (!string.IsNullOrEmpty(PromptEnhancementError)) return PromptEnhancementError!;
+            var endpoint = _enhancementEndpoint;
+            if (endpoint is null) return AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptNoEndpoint);
+            return endpoint.Status switch
+            {
+                PromptEnhancementEndpointStatus.Ready =>
+                    AppLangResources.Format(AppLangResourceKind.AgentGuiEnhancePromptTooltip, EnhancementLabel(endpoint)),
+                PromptEnhancementEndpointStatus.MissingKey =>
+                    AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptMissingKey),
+                PromptEnhancementEndpointStatus.MissingBaseUrl =>
+                    AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptMissingUrl),
+                _ => AppLangResources.Get(AppLangResourceKind.AgentGuiEnhancePromptNoEndpoint),
+            };
+        }
+    }
+
+    private static string EnhancementLabel(PromptEnhancementEndpointView endpoint) =>
+        endpoint.IsSession
+            ? AppLangResources.Get(AppLangResourceKind.SettingsPromptEnhancementSession)
+            : string.IsNullOrWhiteSpace(endpoint.Name)
+                ? AppLangResources.Get(AppLangResourceKind.SettingsPromptEnhancementUnnamed)
+                : endpoint.Name;
+
+    private void OnEnhancementAvailabilityChanged()
+    {
+        OnPropertyChanged(nameof(CanEnhancePrompt));
+        OnPropertyChanged(nameof(EnhancePromptTooltip));
+        EnhancePromptCommand.NotifyCanExecuteChanged();
+    }
+
+    private void OnEnhancementSettingsChanged(object? sender, EventArgs e) => _ = Task.Run(RefreshEnhancementEndpointAsync);
+
+    /// <summary>
+    /// Asks the enhancer which endpoint the button uses for this session, and all endpoints for the composer's menu.
+    /// Runs again when the settings change; a failure leaves the button unavailable rather than guessing.
+    /// </summary>
+    internal async Task RefreshEnhancementEndpointAsync()
+    {
+        if (_disposed || _promptEnhancer is null || _launchPlan is null) return;
+        try
+        {
+            var settings = _settings.Current.PromptEnhancement;
+            var dialect = _definition.Acp?.Dialect;
+            var env = _launchPlan.Environment;
+            var model = Composer.SelectedModelId;
+            var endpoint = await _promptEnhancer.ResolveDefaultAsync(settings, dialect, env, model).ConfigureAwait(false);
+            var all = await _promptEnhancer.ListAsync(settings, dialect, env, model).ConfigureAwait(false);
+            UiContext.Run(() =>
+            {
+                if (_disposed) return;
+                _enhancementEndpoint = endpoint;
+                EnhancementEndpoints = all
+                    .Select(v => new PromptEnhancementEndpointOption(v.Id, EnhancementLabel(v), v.IsAvailable, v.IsDefault))
+                    .ToList();
+                OnPropertyChanged(nameof(EnhancementEndpoints));
+                OnEnhancementAvailabilityChanged();
+            });
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            UiContext.Run(() =>
+            {
+                if (_disposed) return;
+                _enhancementEndpoint = null;
+                PromptEnhancementError = e.Message;
+            });
+        }
+    }
+
+    /// <summary>Rewrites the composer's text with the default endpoint and puts the result back for review; never sends.</summary>
+    [RelayCommand(CanExecute = nameof(CanEnhancePrompt), AllowConcurrentExecutions = true)]
+    public async Task EnhancePromptAsync()
+    {
+        if (_isEnhancingPrompt)
+        {
+            // A second click cancels the request in flight; the text stays as the person wrote it.
+            if (_enhanceCts is { } running) running.Cancel();
+            else IsEnhancingPrompt = false;
+            return;
+        }
+        var endpoint = _enhancementEndpoint;
+        if (string.IsNullOrWhiteSpace(InputText)) return;
+        // The command framework skips Execute when CanExecute is false (an endpoint turned unusable since the last
+        // refresh, say). Only the in-memory list is checked then, so an existing key is never re-read here: that read
+        // may block, and this runs on the UI thread.
+        if (_promptEnhancer is null || endpoint is null || !endpoint.IsSession && endpoint.Status == PromptEnhancementEndpointStatus.MissingBaseUrl) return;
+        var original = InputText;
+
+        var cts = new CancellationTokenSource();
+        _enhanceCts = cts;
+        IsEnhancingPrompt = true;
+        PromptEnhancementError = null;
+        try
+        {
+            var result = await _promptEnhancer.EnhanceAsync(endpoint, original.Trim(), cts.Token).ConfigureAwait(false);
+            UiContext.Run(() =>
+            {
+                // Only replace what was enhanced: text the person changed meanwhile is theirs.
+                if (_disposed || cts.IsCancellationRequested || InputText != original) return;
+                InputText = result;
+                FocusComposerRequested?.Invoke(this, EventArgs.Empty);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception e)
+        {
+            UiContext.Run(() => PromptEnhancementError = e.Message);
+        }
+        finally
+        {
+            UiContext.Run(() =>
+            {
+                if (ReferenceEquals(_enhanceCts, cts)) _enhanceCts = null;
+                IsEnhancingPrompt = false;
+            });
+            cts.Dispose();
+        }
+    }
+
+    /// <summary>Chooses the endpoint the enhance button uses (the composer's menu); saved for every tab.</summary>
+    [RelayCommand]
+    public void SetDefaultEnhancementEndpoint(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return;
+        _settings.Update(s => s.PromptEnhancement.DefaultEndpointId =
+            id == PromptEnhancementSources.SessionEndpointId ? null : id);
+    }
+
     public string StopButtonLabel => IsCancelling
         ? AppLangResources.Get(AppLangResourceKind.AgentGuiStopping)
         : AppLangResources.Get(AppLangResourceKind.AgentGuiStop);
@@ -625,6 +798,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         OnPropertyChanged(nameof(ShowReconnect));
         SendPromptCommand.NotifyCanExecuteChanged();
         SendPromptNowCommand.NotifyCanExecuteChanged();
+        EnhancePromptCommand.NotifyCanExecuteChanged();
         CancelTurnCommand.NotifyCanExecuteChanged();
         ResumeQueueCommand.NotifyCanExecuteChanged();
 
@@ -649,6 +823,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         OnPropertyChanged(nameof(CanSendNow));
         SendPromptCommand.NotifyCanExecuteChanged();
         SendPromptNowCommand.NotifyCanExecuteChanged();
+        EnhancePromptCommand.NotifyCanExecuteChanged();
         UpdateInlinePickers(value);
     }
 
@@ -710,6 +885,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
                 OnQuestionRequest = HandleQuestionRequestAsync,
             };
 
+            _launchPlan = plan;
             var session = _sessionFactory.Create(plan, callbacks);
             session.EventReceived += OnSessionEvent;
             _session = session;
@@ -761,6 +937,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
                 State = AgentGuiState.Ready;
                 RefreshDiagnostics();
             });
+            _ = Task.Run(RefreshEnhancementEndpointAsync);
 
             // Discover third-party gateway/catalog models in the background so custom API models show up in the GUI picker.
             if (_modelDiscovery is not null
@@ -3284,6 +3461,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         _activeTurn = null;
         _connectCts?.Cancel();
         _turnCts?.Cancel();
+        _enhanceCts?.Cancel();
+        _settings.Changed -= OnEnhancementSettingsChanged;
         var old = Interlocked.Exchange(ref _session, null);
         if (old is not null)
         {
@@ -3314,3 +3493,6 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         _ => n.ToString(),
     };
 }
+
+/// <summary>One entry of the composer's "use endpoint" menu for prompt enhancement.</summary>
+public sealed record PromptEnhancementEndpointOption(string Id, string Label, bool IsAvailable, bool IsDefault);

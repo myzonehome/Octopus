@@ -63,6 +63,9 @@ public static class TestApp
             services.AddSingleton(p => (FakeAcpSessionFactory)p.GetRequiredService<Octopus.Acp.Process.IAcpSessionFactory>());
             services.Replace(ServiceDescriptor.Singleton<IAgentScanner>(new FakeAgentScanner("claude", "opencode", "codex")));
             services.Replace(ServiceDescriptor.Singleton<IModelDiscovery, FakeModelDiscovery>());
+            // Prompt enhancement never calls a network in tests: the fake answers in memory.
+            services.Replace(ServiceDescriptor.Singleton<Octopus.Agents.PromptEnhancement.IPromptEnhancer, FakePromptEnhancer>());
+            services.AddSingleton(p => (FakePromptEnhancer)p.GetRequiredService<Octopus.Agents.PromptEnhancement.IPromptEnhancer>());
             services.AddSingleton(p => (FakeModelDiscovery)p.GetRequiredService<IModelDiscovery>());
             services.Replace(ServiceDescriptor.Singleton<Octopus.Agents.Sessions.IAgentSessionService, FakeAgentSessionService>());
             services.AddSingleton(p => (FakeAgentSessionService)p.GetRequiredService<Octopus.Agents.Sessions.IAgentSessionService>());

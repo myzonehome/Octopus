@@ -104,7 +104,8 @@ public sealed class TabContentRegistry(
             services.GetService<IAgentAccountService>(),
             () => services.GetService<IWorkspaceCommands>(),
             services.GetService<ISubagentService>(),
-            services.GetService<IModelDiscovery>());
+            services.GetService<IModelDiscovery>(),
+            services.GetService<Octopus.Agents.PromptEnhancement.IPromptEnhancer>());
         return new AgentGuiTabView { DataContext = vm };
     }
 
