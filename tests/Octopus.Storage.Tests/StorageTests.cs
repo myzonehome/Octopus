@@ -280,6 +280,63 @@ public class ProjectStoreTests
 public class SettingsStoreTests
 {
     [Fact]
+    public void Prompt_enhancement_rejects_blank_and_duplicate_ids_and_clears_bad_default()
+    {
+        using var paths = new TempPaths();
+        using var store = new JsonSettingsStore(paths);
+        store.Load();
+        store.Update(s =>
+        {
+            s.PromptEnhancement.DefaultEndpointId = "gone";
+            s.PromptEnhancement.Endpoints =
+            [
+                new() { Id = "", Name = "blank" },
+                new() { Id = "a", Name = "A", BaseUrl = "https://x/v1/" },
+                new() { Id = "a", Name = "dup" },
+            ];
+        });
+        store.Flush();
+        using var reloaded = new JsonSettingsStore(paths);
+        reloaded.Load();
+        var e = Assert.Single(reloaded.Current.PromptEnhancement.Endpoints);
+        Assert.Equal("a", e.Id);
+        Assert.Equal("https://x/v1", e.BaseUrl);
+        Assert.Null(reloaded.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    [Fact]
+    public void Prompt_enhancement_section_round_trips_and_defaults_when_missing()
+    {
+        using var paths = new TempPaths();
+        Directory.CreateDirectory(Path.GetDirectoryName(paths.SettingsFile)!);
+        File.WriteAllText(paths.SettingsFile, "{\"Version\":1}");
+        using (var missing = new JsonSettingsStore(paths))
+        {
+            missing.Load();
+            Assert.Empty(missing.Current.PromptEnhancement.Endpoints);
+            Assert.Null(missing.Current.PromptEnhancement.DefaultEndpointId);
+        }
+
+        using (var store = new JsonSettingsStore(paths))
+        {
+            store.Load();
+            store.Update(s =>
+            {
+                s.PromptEnhancement.Endpoints = [new() { Id = "a", Name = "A", Protocol = "openai", Model = "m", Temperature = 1.2 }];
+                s.PromptEnhancement.DefaultEndpointId = "a";
+            });
+            store.Flush();
+        }
+        using var reloaded = new JsonSettingsStore(paths);
+        reloaded.Load();
+        var e = Assert.Single(reloaded.Current.PromptEnhancement.Endpoints);
+        Assert.Equal("openai", e.Protocol);
+        Assert.Equal("m", e.Model);
+        Assert.Equal(1.2, e.Temperature);
+        Assert.Equal("a", reloaded.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    [Fact]
     public void Defaults()
     {
         using var paths = new TempPaths();

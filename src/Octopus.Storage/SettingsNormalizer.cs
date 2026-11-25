@@ -19,6 +19,7 @@ internal static class SettingsNormalizer
             ? null
             : settings.Workspaces.RootDirectory.Trim();
         settings.WorkspaceCleanup ??= new();
+        settings.PromptEnhancement ??= new();
         settings.WorkspaceCleanup.InactiveDays = settings.WorkspaceCleanup.InactiveDays <= 0
             ? WorkspaceCleanupSettings.DefaultInactiveDays
             : Math.Clamp(settings.WorkspaceCleanup.InactiveDays, WorkspaceCleanupSettings.MinInactiveDays, WorkspaceCleanupSettings.MaxInactiveDays);
@@ -46,9 +47,30 @@ internal static class SettingsNormalizer
             profile.Env ??= [];
             profile.Features ??= [];
         }
-        settings.Sidebar.Width = Clamp(settings.Sidebar.Width, 200, 480);
-        settings.Terminal.FontSize = Clamp(settings.Terminal.FontSize, 8, 32);
+        var seenEndpointIds = new HashSet<string>(StringComparer.Ordinal);
+        settings.PromptEnhancement.Endpoints.RemoveAll(e => e is null || string.IsNullOrWhiteSpace(e.Id) || !seenEndpointIds.Add(e.Id));
+        foreach (var endpoint in settings.PromptEnhancement.Endpoints)
+        {
+            endpoint.Name = endpoint.Name?.Trim() ?? "";
+            endpoint.BaseUrl = string.IsNullOrWhiteSpace(endpoint.BaseUrl) ? null : endpoint.BaseUrl.Trim().TrimEnd('/');
+            endpoint.Model = string.IsNullOrWhiteSpace(endpoint.Model) ? null : endpoint.Model.Trim();
+            endpoint.SystemPrompt = string.IsNullOrWhiteSpace(endpoint.SystemPrompt) ? null : endpoint.SystemPrompt;
+            if (!PromptEnhancementSources.IsKnownProtocol(endpoint.Protocol))
+                endpoint.Protocol = null;
+            if (endpoint.Temperature is { } temperature)
+                endpoint.Temperature = Math.Clamp(temperature, 0, 2);
+            if (endpoint.MaxTokens is { } maxTokens)
+                endpoint.MaxTokens = Math.Clamp(maxTokens, 64, 8192);
+        }
+        if (settings.PromptEnhancement.DefaultEndpointId is { } defaultId
+            && defaultId != PromptEnhancementSources.SessionEndpointId
+            && !settings.PromptEnhancement.Endpoints.Exists(e => e.Id == defaultId))
+        {
+            settings.PromptEnhancement.DefaultEndpointId = null;
+        }
+        settings.Sidebar.Width = Clamp(settings.Sidebar.Width, 200, 480);        settings.Terminal.FontSize = Clamp(settings.Terminal.FontSize, 8, 32);
         settings.Terminal.ScrollbackLines = (int)Clamp(settings.Terminal.ScrollbackLines, 100, 100_000);
+        settings.Terminal.VsCode = string.IsNullOrWhiteSpace(settings.Terminal.VsCode) ? null : settings.Terminal.VsCode.Trim();
         return settings;
     }
 

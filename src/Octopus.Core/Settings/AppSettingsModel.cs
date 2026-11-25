@@ -17,6 +17,7 @@ public sealed class AppSettingsModel
     public RemoteSettings Remote { get; set; } = new();
     public WorkspaceSettings Workspaces { get; set; } = new();
     public WorkspaceCleanupSettings WorkspaceCleanup { get; set; } = new();
+    public PromptEnhancementSettings PromptEnhancement { get; set; } = new();
 }
 
 /// <summary>Global preferences for isolated branch workspaces (git worktrees).</summary>
@@ -164,6 +165,11 @@ public sealed class TerminalSettings
     public bool ResumeAgentsOnRestart { get; set; } = true;
     /// <summary>Ask before pasting text with several lines into a program that does not use bracketed paste.</summary>
     public bool ConfirmMultilinePaste { get; set; } = true;
+    /// <summary>
+    /// The command that opens a project in VS Code ("Open in VS Code" of its menu): <c>code</c> in PATH by default, or the
+    /// path of a VS Code that is not in PATH (its <c>code</c> script or program). Settings has no field for it yet.
+    /// </summary>
+    public string? VsCode { get; set; }
 }
 
 public sealed class AgentSettings
