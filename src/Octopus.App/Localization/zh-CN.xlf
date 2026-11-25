@@ -224,6 +224,9 @@
     <unit id="TerminalExited"><segment><source>Process exited ({0}). Press Enter to restart.</source><target state="translated">进程已退出（{0}）。按回车重新启动。</target></segment></unit>
     <unit id="SettingsPasteConfirm"><segment><source>Confirm before pasting several lines</source><target state="translated">粘贴多行内容前确认</target></segment></unit>
     <unit id="SettingsPasteConfirmHint"><segment><source>Ask first when the text has more than one line. Programs that use bracketed paste are not asked.</source><target state="translated">文字多于一行时先确认。启用了括号粘贴模式的程序不会询问。</target></segment></unit>
+    <unit id="SettingsVsCode"><segment><source>VS Code command</source><target state="translated">VS Code 命令</target></segment></unit>
+    <unit id="SettingsVsCodeHint"><segment><source>What "Open in VS Code" of a project's menu runs. Leave it empty for code in PATH; VS Code has to be installed with its PATH entry.</source><target state="translated">项目菜单中“在 VS Code 中打开”执行的命令。留空时使用 PATH 中的 code；安装 VS Code 时需勾选加入 PATH。</target></segment></unit>
+    <unit id="SettingsVsCodePlaceholder"><segment><source>code</source><target state="translated">code</target></segment></unit>
     <unit id="SettingsKeyFindInTerminal"><segment><source>Find in terminal</source><target state="translated">在终端中查找</target></segment></unit>
     <unit id="TerminalSearchPlaceholder"><segment><source>Find in terminal</source><target state="translated">在终端中查找</target></segment></unit>
     <unit id="TerminalSearchPrevious"><segment><source>Previous match</source><target state="translated">上一个匹配</target></segment></unit>
@@ -322,6 +325,9 @@
     <unit id="LaunchTerminal"><segment><source>Start terminal</source><target state="translated">启动终端</target></segment></unit>
     <unit id="RenameProject"><segment><source>Rename project</source><target state="translated">重命名项目</target></segment></unit>
     <unit id="RevealInFileManager"><segment><source>Show in file manager</source><target state="translated">在文件管理器中显示</target></segment></unit>
+    <unit id="OpenInVsCode"><segment><source>Open in VS Code</source><target state="translated">在 VS Code 中打开</target></segment></unit>
+    <unit id="OpenInVsCodeFailed"><segment><source>Could not open in VS Code</source><target state="translated">无法在 VS Code 中打开</target></segment></unit>
+    <unit id="OpenInVsCodeFailedClose"><segment><source>OK</source><target state="translated">好</target></segment></unit>
     <unit id="RemoveProject"><segment><source>Remove project</source><target state="translated">移除项目</target></segment></unit>
     <unit id="RemoveProjectTitle"><segment><source>Remove "{0}"?</source><target state="translated">移除“{0}”？</target></segment></unit>
     <unit id="RemoveProjectBody"><segment><source>The project is removed from Octopus. Its folder and files on disk are not deleted.</source><target state="translated">只会从 Octopus 中移除这个项目，磁盘上的文件夹和文件不会被删除。</target></segment></unit>
@@ -1329,5 +1335,48 @@
     <unit id="AccountCustomAccessKeyPlaceholder"><segment><source>Optional for self-hosted relay (or paste octopus://relay?…)</source><target state="translated">自建中转可选，免浏览器直连（也可直接粘贴 octopus://relay?…）</target></segment></unit>
     <unit id="SettingsRemoteRelayAccessKey"><segment><source>Access key</source><target state="translated">访问密钥</target></segment></unit>
     <unit id="SettingsRemoteRelayAccessKeyHint"><segment><source>Optional for self-hosted Octopus Relay to sign in without a browser. Never saved in settings.</source><target state="translated">自建中转服务可选，填后免浏览器直接绑定；不会明文写入设置文件。</target></segment></unit>
+    <unit id="SettingsNavPromptEnhancement"><segment><source>Prompt Enhancement</source><target state="translated">提示词增强</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTitle"><segment><source>Prompt Enhancement</source><target state="translated">提示词增强</target></segment></unit>
+    <unit id="SettingsPromptEnhancementSubtitle"><segment><source>One or more AI endpoints that rewrite your prompt before sending.</source><target state="translated">用于在发送前改写提示词的 AI 接口，可配置多个。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementDefault"><segment><source>Default endpoint</source><target state="translated">默认接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementDefaultHint"><segment><source>The endpoint the enhance button uses.</source><target state="translated">增强按钮使用的接口。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementSession"><segment><source>Follow agent</source><target state="translated">跟随智能体接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementSessionUnavailable"><segment><source>The current agent has no API key Octopus can use.</source><target state="translated">当前智能体没有 Octopus 可使用的 API 密钥。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementEndpoints"><segment><source>Endpoints</source><target state="translated">接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementEndpointsHint"><segment><source>Add one endpoint per provider. Keys are stored in the system keychain.</source><target state="translated">每个服务商添加一个接口；密钥保存在系统钥匙串中。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementAdd"><segment><source>Add endpoint</source><target state="translated">添加接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementUnnamed"><segment><source>Untitled endpoint</source><target state="translated">未命名接口</target></segment></unit>
+    <unit id="SettingsPromptEnhancementDefaultBadge"><segment><source>Default</source><target state="translated">默认</target></segment></unit>
+    <unit id="SettingsPromptEnhancementName"><segment><source>Name</source><target state="translated">名称</target></segment></unit>
+    <unit id="SettingsPromptEnhancementProtocol"><segment><source>Protocol</source><target state="translated">协议</target></segment></unit>
+    <unit id="SettingsPromptEnhancementProtocolAnthropic"><segment><source>Anthropic Messages</source><target state="translated">Anthropic Messages</target></segment></unit>
+    <unit id="SettingsPromptEnhancementProtocolOpenAi"><segment><source>OpenAI Chat Completions</source><target state="translated">OpenAI Chat Completions</target></segment></unit>
+    <unit id="SettingsPromptEnhancementBaseUrl"><segment><source>Base URL</source><target state="translated">接口地址</target></segment></unit>
+    <unit id="SettingsPromptEnhancementBaseUrlPlaceholder"><segment><source>https://api.example.com/v1</source><target state="translated">https://api.example.com/v1</target></segment></unit>
+    <unit id="SettingsPromptEnhancementModel"><segment><source>Model</source><target state="translated">模型</target></segment></unit>
+    <unit id="SettingsPromptEnhancementModelHint"><segment><source>Leave empty to use the provider default.</source><target state="translated">留空则使用服务商默认模型。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementApiKey"><segment><source>API key</source><target state="translated">API 密钥</target></segment></unit>
+    <unit id="SettingsPromptEnhancementKeySaved"><segment><source>Saved — leave empty to keep it.</source><target state="translated">已保存（留空则保持不变）。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementKeyUnset"><segment><source>Not set</source><target state="translated">未设置</target></segment></unit>
+    <unit id="SettingsPromptEnhancementKeySave"><segment><source>Save key</source><target state="translated">保存密钥</target></segment></unit>
+    <unit id="SettingsPromptEnhancementKeyClear"><segment><source>Clear key</source><target state="translated">清除密钥</target></segment></unit>
+    <unit id="SettingsPromptEnhancementKeyKeystoreUnavailable"><segment><source>No system keychain is available on this machine.</source><target state="translated">此计算机没有可用的系统钥匙串。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTemperature"><segment><source>Temperature</source><target state="translated">温度</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTemperatureHint"><segment><source>Optional. 0–2; empty uses the provider default.</source><target state="translated">可选，取值 0–2；留空使用服务商默认。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementMaxTokens"><segment><source>Max tokens</source><target state="translated">最大 Token</target></segment></unit>
+    <unit id="SettingsPromptEnhancementMaxTokensHint"><segment><source>Optional. 64–8192.</source><target state="translated">可选，取值 64–8192。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementSystemPrompt"><segment><source>System prompt</source><target state="translated">系统提示词</target></segment></unit>
+    <unit id="SettingsPromptEnhancementSystemPromptHint"><segment><source>Leave empty to use the built-in enhancer prompt.</source><target state="translated">留空使用内置的增强提示词。</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTest"><segment><source>Test</source><target state="translated">测试</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTesting"><segment><source>Testing…</source><target state="translated">测试中…</target></segment></unit>
+    <unit id="SettingsPromptEnhancementTestOk"><segment><source>Connection OK</source><target state="translated">连接成功</target></segment></unit>
+    <unit id="SettingsPromptEnhancementDelete"><segment><source>Delete</source><target state="translated">删除</target></segment></unit>
+    <unit id="AgentGuiEnhancePrompt"><segment><source>Enhance prompt</source><target state="translated">增强提示词</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptTooltip"><segment><source>Enhance with “{0}”</source><target state="translated">使用「{0}」增强提示词</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptWorking"><segment><source>Enhancing… (click to cancel)</source><target state="translated">正在增强…（点击取消）</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptNoEndpoint"><segment><source>No prompt enhancement endpoint is available. Configure one in Settings → Prompt Enhancement.</source><target state="translated">没有可用的提示词增强接口，请在 设置 → 提示词增强 中配置。</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptMissingKey"><segment><source>The default endpoint has no API key.</source><target state="translated">默认接口缺少 API 密钥。</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptMissingUrl"><segment><source>The default endpoint has no base URL.</source><target state="translated">默认接口缺少接口地址。</target></segment></unit>
+    <unit id="AgentGuiEnhancePromptSwitch"><segment><source>Use endpoint</source><target state="translated">使用接口</target></segment></unit>
   </file>
 </xliff>

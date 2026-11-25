@@ -18,6 +18,7 @@ internal static class SettingsModule
         services.AddSingleton<IPathPicker, StoragePathPicker>();
         services.AddTransient<SettingsViewModel>();
         services.AddTransient<AgentsSettingsViewModel>();
+        services.AddTransient<PromptEnhancement.PromptEnhancementSettingsViewModel>();
         services.AddTransient<GeneralSettingsViewModel>();
         services.AddTransient<WorkspaceCleanupSettingsViewModel>();
         services.AddTransient<TerminalSettingsViewModel>();
