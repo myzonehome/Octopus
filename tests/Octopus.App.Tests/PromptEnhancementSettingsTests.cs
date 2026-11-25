@@ -2,6 +2,8 @@ using Avalonia.Headless.XUnit;
 using Xunit;
 using Octopus.Agents.PromptEnhancement;
 using Octopus.App.Composition;
+using Octopus.App.Localization;
+using Octopus.App.Settings;
 using Octopus.App.Settings.PromptEnhancement;
 using Octopus.Core.Settings;
 using Octopus.Platform;
@@ -42,6 +44,29 @@ public class PromptEnhancementSettingsTests
         var secrets = new MemorySecretStore();
         var enhancer = new StubEnhancer();
         return (new PromptEnhancementSettingsViewModel(settings, secrets, enhancer), settings, secrets, enhancer);
+    }
+
+    [AvaloniaFact]
+    public void Settings_has_prompt_enhancement_section_and_page_binds_to_its_view_model()
+    {
+        var vm = new Octopus.App.Settings.SettingsViewModel(AppHost.Services);
+        var section = Assert.Single(vm.All, s => s.Key == "prompt-enhancement");
+        Assert.Equal(AppLangResourceKind.SettingsNavPromptEnhancement, section.TitleKind);
+        Assert.Contains(vm.Ai, s => s.Key == "prompt-enhancement");
+
+        try
+        {
+            vm.SelectCommand.Execute(section);
+            var page = Assert.IsType<PromptEnhancementSettingsViewModel>(section.Page);
+            Assert.Same(section.Page, page);
+            // The page view compiles against this model (compiled bindings fail at build time when a name is unknown).
+            var view = new PromptEnhancementPageView { DataContext = page };
+            Assert.Same(page, view.DataContext);
+        }
+        finally
+        {
+            vm.Dispose();
+        }
     }
 
     [AvaloniaFact]

@@ -36,6 +36,9 @@ public sealed partial class SettingsSectionViewModel : ObservableObject
 
     public LucideIconKind Icon { get; }
 
+    /// <summary>The title's string table entry; the default member when the title is not localized.</summary>
+    public AppLangResourceKind TitleKind => _title;
+
     public string Title => _titleText?.Invoke() ?? AppLangResources.Get(_title);
 
     /// <summary>Opens this section; set by <see cref="SettingsViewModel"/>.</summary>

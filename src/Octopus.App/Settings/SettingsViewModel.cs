@@ -23,7 +23,11 @@ public sealed partial class SettingsViewModel : ObservableObject, IDisposable
 
     public SettingsViewModel(IServiceProvider services)
     {
-        Ai = [new("agents", LucideIconKind.Bot, AppLangResourceKind.SettingsNavAgents, () => ActivatorUtilities.CreateInstance<AgentsSettingsViewModel>(services))];
+        Ai =
+        [
+            new("agents", LucideIconKind.Bot, AppLangResourceKind.SettingsNavAgents, () => ActivatorUtilities.CreateInstance<AgentsSettingsViewModel>(services)),
+            new("prompt-enhancement", LucideIconKind.Sparkles, AppLangResourceKind.SettingsNavPromptEnhancement, () => ActivatorUtilities.CreateInstance<PromptEnhancement.PromptEnhancementSettingsViewModel>(services)),
+        ];
         General =
         [
             new("general", LucideIconKind.SlidersHorizontal, AppLangResourceKind.SettingsNavGeneral, () => ActivatorUtilities.CreateInstance<GeneralSettingsViewModel>(services)),

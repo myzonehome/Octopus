@@ -5,6 +5,7 @@
              xmlns:l="using:Octopus.App.Localization"
              xmlns:local="using:Octopus.App.Settings"
              xmlns:agents="using:Octopus.App.Settings.Agents"
+             xmlns:pe="using:Octopus.App.Settings.PromptEnhancement"
              xmlns:general="using:Octopus.App.Settings.General"
              xmlns:terminal="using:Octopus.App.Settings.Terminal"
              xmlns:ssh="using:Octopus.App.Settings.Ssh"
@@ -58,6 +59,9 @@
     <UserControl.DataTemplates>
         <DataTemplate DataType="agents:AgentsSettingsViewModel">
             <agents:AgentsPageView />
+        </DataTemplate>
+        <DataTemplate DataType="pe:PromptEnhancementSettingsViewModel">
+            <pe:PromptEnhancementPageView />
         </DataTemplate>
         <DataTemplate DataType="general:GeneralSettingsViewModel">
             <general:GeneralPageView />
