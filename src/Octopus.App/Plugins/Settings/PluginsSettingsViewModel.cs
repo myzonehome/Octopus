@@ -363,14 +363,16 @@ public sealed partial class PluginsSettingsViewModel : ObservableObject, IDispos
         }
     }
 
+    // Selecting clears the bound value (null) while its options reload, even with the page that holds it detached;
+    // only a real choice made on the page counts.
     partial void OnLightThemeChanged(string value)
     {
-        if (!_loadingThemes) _themes.Choose(ThemeAppearance.Light, value.Length == 0 ? null : value);
+        if (!_loadingThemes && value is { } key) _themes.Choose(ThemeAppearance.Light, key.Length == 0 ? null : key);
     }
 
     partial void OnDarkThemeChanged(string value)
     {
-        if (!_loadingThemes) _themes.Choose(ThemeAppearance.Dark, value.Length == 0 ? null : value);
+        if (!_loadingThemes && value is { } key) _themes.Choose(ThemeAppearance.Dark, key.Length == 0 ? null : key);
     }
 
     private void OnThemesChanged(object? sender, EventArgs e) => Dispatcher.UIThread.Post(() => ThemeProblem = _themes.Problem);

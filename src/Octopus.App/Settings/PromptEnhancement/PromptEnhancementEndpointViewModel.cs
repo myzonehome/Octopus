@@ -163,13 +163,12 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
 
     private async Task LoadKeyStateAsync()
     {
-        var key = await _resolveKey(this).ConfigureAwait(false);
-        Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-        {
-            HasSavedKey = !string.IsNullOrWhiteSpace(key);
-            OnPropertyChanged(nameof(KeyStateText));
-        });
+        var key = await ReadKeyAsync().ConfigureAwait(false);
+        Avalonia.Threading.Dispatcher.UIThread.Post(() => HasSavedKey = !string.IsNullOrWhiteSpace(key));
     }
+
+    /// <summary>The keystore read may block: it happens off the UI thread whichever thread calls this.</summary>
+    private Task<string?> ReadKeyAsync() => Task.Run(() => _resolveKey(this));
 
     partial void OnHasSavedKeyChanged(bool value) => OnPropertyChanged(nameof(KeyStateText));
 
@@ -211,9 +210,10 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
     {
         IsTesting = true;
         TestResult = null;
+        // Everything after the awaits runs on the UI thread: the properties below are bound.
         try
         {
-            var key = await _resolveKey(this).ConfigureAwait(false);
+            var key = await ReadKeyAsync().ConfigureAwait(true);
             // Exactly what the enhance button would call: defaults for an empty model/system prompt included.
             var view = PromptEnhancer.Resolve(_model, key, isDefault: false);
             if (!view.IsAvailable)
@@ -224,7 +224,7 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
                     : AppLangResourceKind.SettingsPromptEnhancementTestMissingUrl);
                 return;
             }
-            await _enhancer.EnhanceAsync(view, TestPrompt);
+            await _enhancer.EnhanceAsync(view, TestPrompt).ConfigureAwait(true);
             TestFailed = false;
             TestResult = AppLangResources.Get(AppLangResourceKind.SettingsPromptEnhancementTestOk);
         }

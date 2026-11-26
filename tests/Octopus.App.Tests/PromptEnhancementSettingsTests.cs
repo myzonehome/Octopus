@@ -12,6 +12,7 @@ using Octopus.App.Settings.PromptEnhancement;
 using Octopus.Core.Settings;
 using Octopus.Platform;
 using Octopus.Storage;
+using TKCode.Arc;
 
 namespace Octopus.App.Tests;
 
@@ -24,58 +25,81 @@ public class PromptEnhancementSettingsTests
         Assert.False(vm.HasEndpoints);
     }
 
-    private static TKCode.Arc.Select OpenPage(PromptEnhancementSettingsViewModel vm)
+    private sealed record Page(TKCode.Arc.Select DefaultSelect, Window Window) : IDisposable
+    {
+        public void Dispose() => Window.Close();
+    }
+
+    /// <summary>
+    /// The page from its own view, in a shown window: a Select only writes back to its binding while it is shown.
+    /// Callers close the window in a finally block.
+    /// </summary>
+    private static (TKCode.Arc.Select DefaultSelect, Window Window) OpenPage(PromptEnhancementSettingsViewModel vm)
     {
         var view = new PromptEnhancementPageView { DataContext = vm };
         var window = new Window { Width = 900, Height = 600, Content = view };
         window.Show();
         Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-        return view.FindControl<TKCode.Arc.Select>("DefaultEndpointSelect")!;
+        return (view.FindControl<TKCode.Arc.Select>("DefaultEndpointSelect")!, window);
     }
 
     [AvaloniaFact]
     public async Task Default_select_shows_the_saved_endpoint_and_follows_picks()
     {
         var (vm, settings, _, _) = Create();
-        var select = OpenPage(vm);
-        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
-        Assert.Equal(PromptEnhancementSources.SessionEndpointId, select.SelectedValue);
-        Assert.Equal("跟随智能体接口", select.SelectedText);
+        var (select, window) = OpenPage(vm);
+        try
+        {
+            Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+            Assert.Equal(PromptEnhancementSources.SessionEndpointId, select.SelectedValue);
+            Assert.Equal("跟随智能体接口", select.SelectedText);
 
-        await vm.AddCommand.ExecuteAsync(null);
-        var card = Assert.Single(vm.Endpoints);
-        card.Name = "Office";
-        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-        Assert.Equal(card.Id, vm.DefaultEndpointId);
-        Assert.Equal("Office", select.SelectedText);
-        Assert.True(select.SelectedIndex >= 0);
+            await vm.AddCommand.ExecuteAsync(null);
+            var card = Assert.Single(vm.Endpoints);
+            card.Name = "Office";
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(card.Id, vm.DefaultEndpointId);
+            Assert.Equal("Office", select.SelectedText);
+            Assert.True(select.SelectedIndex >= 0);
 
-        select.SelectedValue = PromptEnhancementSources.SessionEndpointId;
-        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
-        Assert.Null(settings.Current.PromptEnhancement.DefaultEndpointId);
-        Assert.Equal("跟随智能体接口", select.SelectedText);
+            select.SelectedValue = PromptEnhancementSources.SessionEndpointId;
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+            Assert.Null(settings.Current.PromptEnhancement.DefaultEndpointId);
+            Assert.Equal("跟随智能体接口", select.SelectedText);
 
-        select.SelectedValue = card.Id;
-        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
-        Assert.Equal("Office", select.SelectedText);
+            select.SelectedValue = card.Id;
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+            Assert.Equal("Office", select.SelectedText);
+        }
+        finally
+        {
+            window.Close();
+        }
     }
 
     [AvaloniaFact]
     public async Task Deleting_the_default_endpoint_updates_the_select()
     {
         var (vm, _, _, _) = Create();
-        var select = OpenPage(vm);
-        await vm.AddCommand.ExecuteAsync(null);
-        var card = Assert.Single(vm.Endpoints);
-        Assert.Equal(card.Id, select.SelectedValue);
+        var (select, window) = OpenPage(vm);
+        try
+        {
+            await vm.AddCommand.ExecuteAsync(null);
+            var card = Assert.Single(vm.Endpoints);
+            Assert.Equal(card.Id, select.SelectedValue);
 
-        await card.DeleteCommand.ExecuteAsync(null);
-        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
-        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
-        Assert.Equal("跟随智能体接口", select.SelectedText);
-        Assert.True(select.SelectedIndex >= 0);
+            await card.DeleteCommand.ExecuteAsync(null);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+            Assert.Equal("跟随智能体接口", select.SelectedText);
+            Assert.True(select.SelectedIndex >= 0);
+        }
+        finally
+        {
+            window.Close();
+        }
     }
 
     private static CodeBuddyModelCredentials Credentials(string json)
@@ -313,5 +337,195 @@ public class PromptEnhancementSettingsTests
 
         Assert.Equal("https://x/", card.BaseUrl);
         Assert.Equal("https://x/", Assert.Single(settings.Current.PromptEnhancement.Endpoints).BaseUrl);
+    }
+
+    private sealed class OffThreadSecretStore : ISecretStore
+    {
+        public bool IsAvailable => true;
+
+        public async Task<string?> GetAsync(string service, string name, CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            return "k";
+        }
+
+        public Task SetAsync(string service, string name, string value, CancellationToken cancellationToken = default) =>
+            Task.Run(() => Task.CompletedTask);
+
+        public Task DeleteAsync(string service, string name, CancellationToken cancellationToken = default) =>
+            Task.Run(() => Task.CompletedTask);
+    }
+
+    /// <summary>The connection test awaits the keystore and the network; their continuations must land on the UI thread.</summary>
+    [AvaloniaFact]
+    public async Task Test_connection_updates_ui_state_on_the_ui_thread_after_off_thread_awaits()
+    {
+        var settings = AppHost.Get<ISettingsStore>();
+        settings.Update(s => s.PromptEnhancement = new PromptEnhancementSettings
+        {
+            Endpoints = [new PromptEnhancementEndpoint { Id = "e1", Name = "Office", BaseUrl = "https://gw.example.com/v1" }],
+        });
+        var enhancer = new StubEnhancer();
+        enhancer.Enhance = async _ =>
+        {
+            await Task.Delay(20).ConfigureAwait(false);
+            return "OK";
+        };
+        var vm = new PromptEnhancementSettingsViewModel(settings, new OffThreadSecretStore(), enhancer);
+        var card = Assert.Single(vm.Endpoints);
+
+        var errors = new List<Exception>();
+        card.PropertyChanged += (_, e) =>
+        {
+            if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) errors.Add(new InvalidOperationException(e.PropertyName));
+        };
+        await card.TestCommand.ExecuteAsync(null);
+
+        Assert.Empty(errors);
+        Assert.False(card.IsTesting);
+        Assert.False(card.TestFailed);
+        vm.Dispose();
+    }
+
+    /// <summary>
+    /// The Select clears its bound value while it reloads options. That happens after the page is shown (a scroll
+    /// area only builds its content on screen), by which time the view model is no longer "loading".
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Reloading_the_default_choices_with_the_page_shown_keeps_the_saved_default()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        var (select, window) = OpenPage(vm);
+        try
+        {
+            Assert.Equal(card.Id, select.SelectedValue);
+
+            vm.DefaultChoices.Clear();
+            vm.DefaultChoices.Add(new SelectOption(PromptEnhancementSources.SessionEndpointId, "跟随智能体接口"));
+            vm.DefaultChoices.Add(new SelectOption(card.Id, "Office"));
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Assert.False(string.IsNullOrEmpty(vm.DefaultEndpointId));
+            Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Refresh_after_the_options_were_cleared_as_a_page_loads_keeps_the_default()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+
+        // What an already-created prompt enhancement page sees when it is first scrolled into view.
+        vm.DefaultChoices.Clear();
+        vm.DefaultChoices.Add(new SelectOption(PromptEnhancementSources.SessionEndpointId, "跟随智能体接口"));
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    /// <summary>
+    /// What a Select does while its options reload: it drops the pick and writes the empty value back into the two-way
+    /// binding. The property must not take that for a request to make the first option the default.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Adding_the_first_endpoint_with_the_page_shown_keeps_it_the_default()
+    {
+        var (vm, settings, _, _) = Create();
+        var (select, window) = OpenPage(vm);
+        try
+        {
+
+            await vm.AddCommand.ExecuteAsync(null);
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+            var card = Assert.Single(vm.Endpoints);
+            Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+            Assert.Equal(card.Id, vm.DefaultEndpointId);
+            Assert.Equal(card.Id, select.SelectedValue);
+        }
+        finally
+        {
+            window.Close();
+        }
+    }
+
+    [AvaloniaFact]
+    public void The_bound_null_a_select_writes_back_is_not_a_choice()
+    {
+        var (vm, settings, _, _) = Create();
+        vm.AddCommand.Execute(null);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        var card = Assert.Single(vm.Endpoints);
+
+        vm.DefaultEndpointId = null;
+
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+        Assert.Equal(card.Id, vm.DefaultEndpointId);
+    }
+
+    /// <summary>
+    /// A Select writes null back while it drops the option of a deleted endpoint. The whole list is not "follow the
+    /// agent" then: keeping the endpoints already on disk is what a restart would show.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task A_select_clearing_after_a_delete_does_not_erase_the_other_endpoints()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        await vm.AddCommand.ExecuteAsync(null);
+        var (first, second) = (vm.Endpoints[0], vm.Endpoints[1]);
+        first.BaseUrl = "https://one.example.com/v1";
+
+        await second.DeleteCommand.ExecuteAsync(null);
+        if (vm.DefaultEndpointId == second.Id) vm.DefaultEndpointId = null;
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var kept = Assert.Single(settings.Current.PromptEnhancement.Endpoints);
+        Assert.Equal(first.Id, kept.Id);
+        Assert.Equal("https://one.example.com/v1", kept.BaseUrl);
+        Assert.NotEqual(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+    }
+
+    [AvaloniaFact]
+    public async Task A_stray_empty_selection_does_not_erase_the_saved_endpoints()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        await vm.AddCommand.ExecuteAsync(null);
+        var first = vm.Endpoints[0];
+        first.BaseUrl = "https://api-bus.example.com/v1";
+
+        // What a Select writes back while its options reload and the saved endpoint is (briefly) not among them.
+        vm.DefaultEndpointId = null;
+
+        Assert.Equal(2, settings.Current.PromptEnhancement.Endpoints.Count);
+        var kept = Assert.Single(settings.Current.PromptEnhancement.Endpoints, e => e.Id == first.Id);
+        Assert.Equal("https://api-bus.example.com/v1", kept.BaseUrl);
+        // The default is unchanged (the first added endpoint became it); only the list had to stay intact.
+        Assert.Equal(first.Id, vm.DefaultEndpointId);
+        Assert.Equal(first.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    [AvaloniaFact]
+    public async Task Pointing_the_default_at_a_missing_endpoint_does_not_erase_the_others()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        await vm.AddCommand.ExecuteAsync(null);
+        var first = vm.Endpoints[0];
+        first.BaseUrl = "https://api-bus.example.com/v1";
+
+        vm.DefaultEndpointId = "gone";
+
+        Assert.Equal(2, settings.Current.PromptEnhancement.Endpoints.Count);
+        Assert.Equal("https://api-bus.example.com/v1",
+            Assert.Single(settings.Current.PromptEnhancement.Endpoints, e => e.Id == first.Id).BaseUrl);
+        Assert.NotEqual("gone", vm.DefaultEndpointId);
     }
 }
