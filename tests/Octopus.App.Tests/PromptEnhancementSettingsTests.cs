@@ -314,4 +314,52 @@ public class PromptEnhancementSettingsTests
         Assert.Equal("https://x/", card.BaseUrl);
         Assert.Equal("https://x/", Assert.Single(settings.Current.PromptEnhancement.Endpoints).BaseUrl);
     }
+
+    private sealed class OffThreadSecretStore : ISecretStore
+    {
+        public bool IsAvailable => true;
+
+        public async Task<string?> GetAsync(string service, string name, CancellationToken cancellationToken = default)
+        {
+            await Task.Yield();
+            return "k";
+        }
+
+        public Task SetAsync(string service, string name, string value, CancellationToken cancellationToken = default) =>
+            Task.Run(() => Task.CompletedTask);
+
+        public Task DeleteAsync(string service, string name, CancellationToken cancellationToken = default) =>
+            Task.Run(() => Task.CompletedTask);
+    }
+
+    /// <summary>The connection test awaits the keystore and the network; their continuations must land on the UI thread.</summary>
+    [AvaloniaFact]
+    public async Task Test_connection_updates_ui_state_on_the_ui_thread_after_off_thread_awaits()
+    {
+        var settings = AppHost.Get<ISettingsStore>();
+        settings.Update(s => s.PromptEnhancement = new PromptEnhancementSettings
+        {
+            Endpoints = [new PromptEnhancementEndpoint { Id = "e1", Name = "Office", BaseUrl = "https://gw.example.com/v1" }],
+        });
+        var enhancer = new StubEnhancer();
+        enhancer.Enhance = async _ =>
+        {
+            await Task.Delay(20).ConfigureAwait(false);
+            return "OK";
+        };
+        var vm = new PromptEnhancementSettingsViewModel(settings, new OffThreadSecretStore(), enhancer);
+        var card = Assert.Single(vm.Endpoints);
+
+        var errors = new List<Exception>();
+        card.PropertyChanged += (_, e) =>
+        {
+            if (!Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) errors.Add(new InvalidOperationException(e.PropertyName));
+        };
+        await card.TestCommand.ExecuteAsync(null);
+
+        Assert.Empty(errors);
+        Assert.False(card.IsTesting);
+        Assert.False(card.TestFailed);
+        vm.Dispose();
+    }
 }
