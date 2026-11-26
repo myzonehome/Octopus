@@ -44,6 +44,17 @@ public sealed record PromptEnhancementEndpointView(
 
 public sealed class PromptEnhancementException(string message) : Exception(message);
 
+/// <summary>
+/// Credentials the app found in the running agent's own configuration (CodeBuddy's user models), used by the
+/// built-in "follow agent" endpoint when the session environment carries no API key.
+/// </summary>
+public sealed record PromptEnhancementSessionCredentials(string BaseUrl, string ApiKey, string Model)
+{
+    /// <summary>Never prints the key: this record can end up in logs and assertions.</summary>
+    public override string ToString() =>
+        $"PromptEnhancementSessionCredentials {{ BaseUrl = {BaseUrl}, ApiKey = ***, Model = {Model} }}";
+}
+
 /// <summary>Resolves the configured endpoints (and the built-in one that follows the agent) and rewrites a prompt.</summary>
 public interface IPromptEnhancer
 {
@@ -53,7 +64,8 @@ public interface IPromptEnhancer
         string? dialect,
         IReadOnlyDictionary<string, string> sessionEnvironment,
         string? sessionModelId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null);
 
     /// <summary>
     /// The endpoint the button uses: the saved default; without one, the built-in "follow agent" entry.
@@ -64,7 +76,8 @@ public interface IPromptEnhancer
         string? dialect,
         IReadOnlyDictionary<string, string> sessionEnvironment,
         string? sessionModelId,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null);
 
     /// <summary>Rewrites the prompt; throws <see cref="PromptEnhancementException"/> on failure.</summary>
     Task<string> EnhanceAsync(
@@ -111,12 +124,14 @@ public sealed partial class PromptEnhancer : IPromptEnhancer
         string? dialect,
         IReadOnlyDictionary<string, string> sessionEnvironment,
         string? sessionModelId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null)
     {
         var defaultId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
         var list = new List<PromptEnhancementEndpointView>
         {
-            ResolveSession(dialect, sessionEnvironment, sessionModelId, isDefault: defaultId == PromptEnhancementSources.SessionEndpointId),
+            ResolveSession(dialect, sessionEnvironment, sessionModelId, sessionCredentials,
+                isDefault: defaultId == PromptEnhancementSources.SessionEndpointId),
         };
 
         foreach (var endpoint in settings.Endpoints)
@@ -135,19 +150,30 @@ public sealed partial class PromptEnhancer : IPromptEnhancer
         string? dialect,
         IReadOnlyDictionary<string, string> sessionEnvironment,
         string? sessionModelId,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null)
     {
         var defaultId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
-        var list = await ListAsync(settings, dialect, sessionEnvironment, sessionModelId, cancellationToken).ConfigureAwait(false);
+        var list = await ListAsync(settings, dialect, sessionEnvironment, sessionModelId, cancellationToken, sessionCredentials).ConfigureAwait(false);
         return list.FirstOrDefault(v => v.Id == defaultId);
     }
 
     private static PromptEnhancementEndpointView ResolveSession(
-        string? dialect, IReadOnlyDictionary<string, string> env, string? sessionModelId, bool isDefault)
+        string? dialect, IReadOnlyDictionary<string, string> env, string? sessionModelId,
+        PromptEnhancementSessionCredentials? credentials, bool isDefault)
     {
         PromptEnhancementEndpointView Unavailable(string? model, PromptEnhancementEndpointStatus status, string? protocol = null) =>
             new(PromptEnhancementSources.SessionEndpointId, SessionName, protocol, null, null, model, null, null, null,
                 status, IsSession: true, isDefault);
+
+        // A user model configured in the agent itself is the session endpoint even when its gateway is not named
+        // in the environment (CodeBuddy keeps the URL and key in ~/.codebuddy/models.json).
+        if (credentials is not null)
+        {
+            return new(PromptEnhancementSources.SessionEndpointId, SessionName, PromptEnhancementSources.OpenAi,
+                credentials.BaseUrl, credentials.ApiKey, credentials.Model, null, null, null,
+                PromptEnhancementEndpointStatus.Ready, IsSession: true, isDefault);
+        }
 
         // The dialect names the provider; agents whose dialect is neutral are judged by the variables they run with.
         bool? isAnthropic = IsClaudeDialect(dialect) ? true

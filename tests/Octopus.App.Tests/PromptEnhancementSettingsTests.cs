@@ -1,6 +1,10 @@
+using Avalonia.Controls;
 using Avalonia.Headless.XUnit;
+using Avalonia.VisualTree;
+using CommunityToolkit.Mvvm.Messaging;
 using Xunit;
 using Octopus.Agents.PromptEnhancement;
+using Octopus.App.AgentGui;
 using Octopus.App.Composition;
 using Octopus.App.Localization;
 using Octopus.App.Settings;
@@ -19,6 +23,127 @@ public class PromptEnhancementSettingsTests
         var (vm, _, _, _) = Create();
         Assert.False(vm.HasEndpoints);
     }
+
+    private static TKCode.Arc.Select OpenPage(PromptEnhancementSettingsViewModel vm)
+    {
+        var view = new PromptEnhancementPageView { DataContext = vm };
+        var window = new Window { Width = 900, Height = 600, Content = view };
+        window.Show();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        return view.FindControl<TKCode.Arc.Select>("DefaultEndpointSelect")!;
+    }
+
+    [AvaloniaFact]
+    public async Task Default_select_shows_the_saved_endpoint_and_follows_picks()
+    {
+        var (vm, settings, _, _) = Create();
+        var select = OpenPage(vm);
+        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+        Assert.Equal(PromptEnhancementSources.SessionEndpointId, select.SelectedValue);
+        Assert.Equal("跟随智能体接口", select.SelectedText);
+
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        card.Name = "Office";
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.Equal(card.Id, vm.DefaultEndpointId);
+        Assert.Equal("Office", select.SelectedText);
+        Assert.True(select.SelectedIndex >= 0);
+
+        select.SelectedValue = PromptEnhancementSources.SessionEndpointId;
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+        Assert.Null(settings.Current.PromptEnhancement.DefaultEndpointId);
+        Assert.Equal("跟随智能体接口", select.SelectedText);
+
+        select.SelectedValue = card.Id;
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+        Assert.Equal("Office", select.SelectedText);
+    }
+
+    [AvaloniaFact]
+    public async Task Deleting_the_default_endpoint_updates_the_select()
+    {
+        var (vm, _, _, _) = Create();
+        var select = OpenPage(vm);
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        Assert.Equal(card.Id, select.SelectedValue);
+
+        await card.DeleteCommand.ExecuteAsync(null);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.Equal(PromptEnhancementSources.SessionEndpointId, vm.DefaultEndpointId);
+        Assert.Equal("跟随智能体接口", select.SelectedText);
+        Assert.True(select.SelectedIndex >= 0);
+    }
+
+    private static CodeBuddyModelCredentials Credentials(string json)
+    {
+        var home = Directory.CreateTempSubdirectory("octopus-codebuddy-").FullName;
+        Directory.CreateDirectory(Path.Combine(home, ".codebuddy"));
+        File.WriteAllText(Path.Combine(home, ".codebuddy", "models.json"), json);
+        return new CodeBuddyModelCredentials(new Octopus.Plugins.Security.UserHome(home));
+    }
+
+    [Fact]
+    public void CodeBuddy_user_model_resolves_to_its_own_gateway()
+    {
+        var reader = Credentials("""
+            { "models": [
+              { "id": "m1", "name": "Model One", "url": "https://openrouter.ai/api/v1/chat/completions", "apiKey": "sk-secret" },
+              { "id": "m2", "url": "http://gateway.local/v1", "apiKey": "sk-two" }
+            ] }
+            """);
+
+        var found = reader.Find("Model One");
+        Assert.NotNull(found);
+        Assert.Equal("https://openrouter.ai/api/v1", found!.BaseUrl);
+        Assert.Equal("sk-secret", found.ApiKey);
+        Assert.Equal("m1", found.Model);
+        Assert.DoesNotContain("sk-secret", found.ToString());
+
+        Assert.Equal("http://gateway.local/v1", reader.Find("m2")!.BaseUrl);
+        Assert.Null(reader.Find("hy4flash-free"));
+    }
+
+    [Fact]
+    public void CodeBuddy_models_without_a_key_or_valid_json_are_not_endpoints()
+    {
+        var reader = Credentials("{\"models\":[{\"id\":\"m1\",\"url\":\"https://x/v1\"}]}");
+        Assert.Null(reader.Find("m1"));
+        Assert.Null(Credentials("not json").Find("m1"));
+    }
+
+    public sealed class KeyChangeRecorder : IRecipient<PromptEnhancementEndpointsChanged>
+    {
+        public int Count { get; private set; }
+        public void Receive(PromptEnhancementEndpointsChanged message) => Count++;
+    }
+
+    [AvaloniaFact]
+    public async Task Saving_and_clearing_a_key_notifies_the_composer()
+    {
+        var (vm, _, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        var recorder = new KeyChangeRecorder();
+        WeakReferenceMessenger.Default.Register<PromptEnhancementEndpointsChanged>(recorder);
+        try
+        {
+            card.KeyDraft = "sk-key";
+            await card.SaveKeyCommand.ExecuteAsync(null);
+            Assert.Equal(1, recorder.Count);
+
+            await card.ClearKeyCommand.ExecuteAsync(null);
+            Assert.Equal(2, recorder.Count);
+        }
+        finally
+        {
+            WeakReferenceMessenger.Default.UnregisterAll(recorder);
+        }
+    }
+
     private sealed class StubEnhancer : IPromptEnhancer
     {
         public Func<PromptEnhancementEndpointView, Task<string>> Enhance { get; set; } =
@@ -28,11 +153,13 @@ public class PromptEnhancementSettingsTests
             Enhance(endpoint);
 
         public Task<IReadOnlyList<PromptEnhancementEndpointView>> ListAsync(PromptEnhancementSettings settings, string? dialect,
-            IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default) =>
+            IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default,
+            PromptEnhancementSessionCredentials? sessionCredentials = null) =>
             Task.FromResult<IReadOnlyList<PromptEnhancementEndpointView>>([]);
 
         public Task<PromptEnhancementEndpointView?> ResolveDefaultAsync(PromptEnhancementSettings settings, string? dialect,
-            IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default) =>
+            IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default,
+            PromptEnhancementSessionCredentials? sessionCredentials = null) =>
             Task.FromResult<PromptEnhancementEndpointView?>(null);
     }
 

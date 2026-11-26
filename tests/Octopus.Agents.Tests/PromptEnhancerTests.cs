@@ -85,6 +85,26 @@ public class PromptEnhancerTests
     }
 
     [Fact]
+    public async Task CodeBuddy_user_model_credentials_make_the_session_endpoint_ready()
+    {
+        var (enhancer, _, _) = Create((_, _) => OpenAiText("ok"));
+        var credentials = new PromptEnhancementSessionCredentials("https://gw.example.com/v1", "sk-cb", "user-model");
+
+        var session = Assert.Single(await enhancer.ListAsync(new PromptEnhancementSettings(), "codebuddy",
+            new Dictionary<string, string>(), "user-model", sessionCredentials: credentials));
+        Assert.True(session.IsSession);
+        Assert.Equal(PromptEnhancementEndpointStatus.Ready, session.Status);
+        Assert.Equal(PromptEnhancementSources.OpenAi, session.Protocol);
+        Assert.Equal("https://gw.example.com/v1", session.BaseUrl);
+        Assert.Equal("sk-cb", session.ApiKey);
+        Assert.Equal("user-model", session.Model);
+
+        var builtIn = Assert.Single(await enhancer.ListAsync(new PromptEnhancementSettings(), "codebuddy",
+            new Dictionary<string, string>(), "hy4flash-free"));
+        Assert.Equal(PromptEnhancementEndpointStatus.MissingKey, builtIn.Status);
+    }
+
+    [Fact]
     public async Task Custom_endpoint_missing_key_is_reported_and_never_falls_back()
     {
         var (enhancer, _, _) = Create((_, _) => AnthropicText("x"));

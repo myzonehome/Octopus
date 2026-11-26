@@ -1,5 +1,6 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CommunityToolkit.Mvvm.Messaging;
 using Octopus.Agents.PromptEnhancement;
 using Octopus.App.Localization;
 using Octopus.Core.Settings;
@@ -190,6 +191,7 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
         await _secrets.SetAsync(PromptEnhancementSources.SecretService, _model.Id, key).ConfigureAwait(true);
         KeyDraft = "";
         HasSavedKey = true;
+        WeakReferenceMessenger.Default.Send(new PromptEnhancementEndpointsChanged());
     }
 
     [RelayCommand]
@@ -198,6 +200,7 @@ public sealed partial class PromptEnhancementEndpointViewModel : ObservableObjec
         if (!_secrets.IsAvailable) return;
         await _secrets.DeleteAsync(PromptEnhancementSources.SecretService, _model.Id).ConfigureAwait(true);
         HasSavedKey = false;
+        WeakReferenceMessenger.Default.Send(new PromptEnhancementEndpointsChanged());
     }
 
     [RelayCommand]

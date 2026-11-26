@@ -19,6 +19,7 @@ using Octopus.App.Common;
 using Octopus.App.Files;
 using Octopus.App.Localization;
 using Octopus.App.Services;
+using Octopus.App.Settings.PromptEnhancement;
 using Octopus.App.Sidebar;
 using Octopus.App.Workspace;
 using Octopus.Core.Agents;
@@ -169,7 +170,8 @@ public sealed partial class QueuedPrompt : ObservableObject
 /// ViewModel for an ACP Agent GUI tab with Scheme D orchestration (Live Workflow Swimlane, Floating HUD Capsules,
 /// Slide-Over SubAgent Drawer, persistent Background Bash tracking) and Bash Style 2 (output-first + script modal).
 /// </summary>
-public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<FocusSubagentRequested>, IDisposable
+public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<FocusSubagentRequested>,
+    IRecipient<PromptEnhancementEndpointsChanged>, IDisposable
 {
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -199,6 +201,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     private readonly ISubagentService? _subagents;
     private readonly IModelDiscovery? _modelDiscovery;
     private readonly IPromptEnhancer? _promptEnhancer;
+    private readonly ICodeBuddyModelCredentials? _codeBuddyCredentials;
 
     /// <summary>The launch plan of the running session: its environment holds the keys the "follow agent" endpoint uses.</summary>
     private AcpLaunchPlan? _launchPlan;
@@ -275,7 +278,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         Func<IWorkspaceCommands?>? workspaceCommands = null,
         ISubagentService? subagents = null,
         IModelDiscovery? modelDiscovery = null,
-        IPromptEnhancer? promptEnhancer = null)
+        IPromptEnhancer? promptEnhancer = null,
+        ICodeBuddyModelCredentials? codeBuddyCredentials = null)
     {
         _project = project;
         _item = item;
@@ -295,6 +299,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         _subagents = subagents;
         _modelDiscovery = modelDiscovery;
         _promptEnhancer = promptEnhancer;
+        _codeBuddyCredentials = codeBuddyCredentials;
         if (promptEnhancer is not null) _settings.Changed += OnEnhancementSettingsChanged;
 
         var profile = settings.Current.Agents.ProfileOf(definition.Id);
@@ -331,7 +336,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
             AppLangResources.Get(AppLangResourceKind.AgentGuiQuickPromptTests),
         ];
 
-        WeakReferenceMessenger.Default.Register(this);
+        WeakReferenceMessenger.Default.RegisterAll(this);
         ScriptPreview.PropertyChanged += OnScriptPreviewPropertyChanged;
     }
 
@@ -672,8 +677,11 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         var model = Composer.SelectedModelId;
         try
         {
+            var isCodeBuddy = string.Equals(_definition.Id, "codebuddy", StringComparison.OrdinalIgnoreCase)
+                || dialect?.StartsWith("codebuddy", StringComparison.OrdinalIgnoreCase) == true;
+            var credentials = isCodeBuddy ? _codeBuddyCredentials?.Find(model) : null;
             var all = await Task.Run(
-                () => _promptEnhancer.ListAsync(settings, dialect, env, model)).ConfigureAwait(false);
+                () => _promptEnhancer.ListAsync(settings, dialect, env, model, sessionCredentials: credentials)).ConfigureAwait(false);
             var defaultId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
             var endpoint = all.FirstOrDefault(v => v.Id == defaultId);
             UiContext.Run(() =>
@@ -1729,6 +1737,12 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
                 SelectedSubagent = run;
             }
         });
+    }
+
+    public void Receive(PromptEnhancementEndpointsChanged message)
+    {
+        // Keys live in the keystore, not settings.json, so this is the only notice that a key was saved or cleared.
+        UiContext.Run(() => _ = RefreshEnhancementEndpointAsync());
     }
 
     [RelayCommand]
@@ -3209,6 +3223,8 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
             }
             _confirmedModelId = modelId;
             _desiredModelId = modelId;
+            // A different model can carry different CodeBuddy gateway credentials: re-resolve the enhance button.
+            UiContext.Run(() => _ = RefreshEnhancementEndpointAsync());
             _item.Launch ??= new AgentLaunchOptions();
             _item.Launch.Model = modelId;
             SetUi(() =>

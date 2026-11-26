@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using CommunityToolkit.Mvvm.Messaging;
 using Octopus.Agents.PromptEnhancement;
 using Octopus.App.Localization;
 using Octopus.Core.Settings;
@@ -20,11 +21,33 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
     private readonly ISecretStore _secrets;
     private readonly IPromptEnhancer _enhancer;
 
-    [ObservableProperty]
-    public partial string DefaultEndpointId { get; set; } = PromptEnhancementSources.SessionEndpointId;
+    private string _defaultEndpointId = PromptEnhancementSources.SessionEndpointId;
 
-    [ObservableProperty]
-    public partial IReadOnlyList<SelectOption> DefaultChoices { get; private set; } = [];
+    public string DefaultEndpointId
+    {
+        get => _defaultEndpointId;
+        set
+        {
+            // A Select cleared while its options are rebuilt is not a request to change the default.
+            if (string.IsNullOrWhiteSpace(value) || value == _defaultEndpointId) return;
+            _defaultEndpointId = value;
+            OnPropertyChanged();
+
+            var saved = value == PromptEnhancementSources.SessionEndpointId ? null : value;
+            if (_settings.Current.PromptEnhancement.DefaultEndpointId != saved)
+                _settings.Update(s => s.PromptEnhancement.DefaultEndpointId = saved);
+            foreach (var card in Endpoints)
+            {
+                card.IsDefault = card.Id == value;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Keep the same collection instance: replacing ItemsSource makes the Select drop its SelectedValue, which
+    /// two-way writes an empty id back into the view model and leaves the field stuck on its placeholder.
+    /// </summary>
+    public ObservableCollection<SelectOption> DefaultChoices { get; } = [];
 
     public PromptEnhancementSettingsViewModel(ISettingsStore settings, ISecretStore secrets, IPromptEnhancer enhancer)
     {
@@ -65,39 +88,40 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
     private void Refresh()
     {
         var settings = _settings.Current.PromptEnhancement;
-        DefaultEndpointId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
+        var defaultId = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
 
         var choices = new List<SelectOption>
         {
             new(PromptEnhancementSources.SessionEndpointId, AppLangResources.Get(AppLangResourceKind.SettingsPromptEnhancementSession)),
         };
         choices.AddRange(Endpoints.Select(card => new SelectOption(card.Id, card.DisplayName)));
-        DefaultChoices = choices;
 
+        // Update in place: the Select loses its resolved option on a Clear(), leaving the field blank even
+        // though SelectedValue still holds the right id.
+        for (var i = DefaultChoices.Count - 1; i >= 0; i--)
+        {
+            if (!choices.Any(c => c.Value == DefaultChoices[i].Value)) DefaultChoices.RemoveAt(i);
+        }
+        for (var i = 0; i < choices.Count; i++)
+        {
+            var at = -1;
+            for (var j = 0; j < DefaultChoices.Count; j++)
+            {
+                if (DefaultChoices[j].Value == choices[i].Value) { at = j; break; }
+            }
+            if (at < 0) DefaultChoices.Add(choices[i]);
+            else if (DefaultChoices[at].Label != choices[i].Label) DefaultChoices[at] = choices[i];
+        }
+
+        // The option must be in the list before the Select is told to pick it: it does not re-resolve a
+        // SelectedValue when a matching item arrives later.
+        DefaultEndpointId = defaultId;
         foreach (var card in Endpoints)
         {
             card.IsDefault = card.Id == DefaultEndpointId;
         }
 
         OnPropertyChanged(nameof(HasEndpoints));
-    }
-
-    partial void OnDefaultEndpointIdChanged(string value)
-    {
-        // A Select cleared while its options are rebuilt is not a request to change the default.
-        if (string.IsNullOrWhiteSpace(value)) return;
-        _settings.Update(s => s.PromptEnhancement.DefaultEndpointId =
-            value == PromptEnhancementSources.SessionEndpointId ? null : value);
-        foreach (var card in Endpoints)
-        {
-            card.IsDefault = card.Id == value;
-        }
-    }
-
-    partial void OnDefaultChoicesChanged(IReadOnlyList<SelectOption> value)
-    {
-        // ItemsSource resets the Select's selection; reassert the saved value.
-        OnPropertyChanged(nameof(DefaultEndpointId));
     }
 
     [RelayCommand]
@@ -123,6 +147,7 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
             if (s.PromptEnhancement.DefaultEndpointId == id) s.PromptEnhancement.DefaultEndpointId = null;
         });
         if (_secrets.IsAvailable) await _secrets.DeleteAsync(PromptEnhancementSources.SecretService, id).ConfigureAwait(false);
+        WeakReferenceMessenger.Default.Send(new PromptEnhancementEndpointsChanged());
         var card = Endpoints.FirstOrDefault(c => c.Id == id);
         UiThread(() =>
         {
@@ -131,3 +156,6 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
         });
     }
 }
+
+/// <summary>Sent when a key changes in the keystore, which settings.json alone cannot announce.</summary>
+public sealed record PromptEnhancementEndpointsChanged;

@@ -24,11 +24,13 @@ public sealed class FakePromptEnhancer : IPromptEnhancer
     public List<string> Calls { get; } = [];
 
     public Task<IReadOnlyList<PromptEnhancementEndpointView>> ListAsync(PromptEnhancementSettings settings, string? dialect,
-        IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default) =>
+        IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null) =>
         Task.FromResult(Build(settings));
 
     public Task<PromptEnhancementEndpointView?> ResolveDefaultAsync(PromptEnhancementSettings settings, string? dialect,
-        IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default)
+        IReadOnlyDictionary<string, string> sessionEnvironment, string? sessionModelId, CancellationToken cancellationToken = default,
+        PromptEnhancementSessionCredentials? sessionCredentials = null)
     {
         var all = Build(settings);
         var id = settings.DefaultEndpointId ?? PromptEnhancementSources.SessionEndpointId;
