@@ -34,6 +34,9 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
         {
             // A Select cleared while its options are rebuilt is not a request to change the default.
             if (string.IsNullOrWhiteSpace(value) || value == _defaultEndpointId) return;
+            // Only a known choice: an id the list does not know is not saved at all, and the normalizer would then reset
+            // the default to "follow the agent", which would drop the endpoints while the person is still editing them.
+            if (value != PromptEnhancementSources.SessionEndpointId && !Endpoints.Any(c => c.Id == value)) return;
             _defaultEndpointId = value;
             OnPropertyChanged();
 
