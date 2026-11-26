@@ -97,6 +97,12 @@ public sealed class MobileShell : ContentControl, INavigator
         Push(new TerminalPage(new TerminalViewModel(session, _workspace, this)));
     }
 
+    public void ReplaceSession(RemoteSession session)
+    {
+        if (_stack is not null && _stack.Depth > 1) Back();
+        ShowSession(session);
+    }
+
     public void ShowConversation(RemoteSession session) => Push(new ConversationPage(new ConversationViewModel(session, _workspace, this)));
 
     public void ShowSessionDetails(RemoteSession session) => Push(new SessionDetailPage(new SessionDetailViewModel(session, _workspace, this)));
@@ -170,12 +176,18 @@ public sealed class MobileShell : ContentControl, INavigator
     // A pop (the back button, the back swipe or Back()) lets go of what the page held.
     private void OnNavigated(object? sender, TKCode.Arc.Mobile.NavigationEventArgs e)
     {
-        if (e.Kind != NavigationKind.Pop || _stack is null) return;
-        while (_pages.Count > _stack.Depth - 1)
+        if (e.Kind == NavigationKind.Pop && _stack is not null)
         {
-            var page = _pages[^1];
-            _pages.RemoveAt(_pages.Count - 1);
-            (page as IClosablePage)?.OnClosed();
+            while (_pages.Count > _stack.Depth - 1)
+            {
+                var page = _pages[^1];
+                _pages.RemoveAt(_pages.Count - 1);
+                (page as IClosablePage)?.OnClosed();
+            }
+        }
+        if (_stack?.Top is ConversationPage conversation)
+        {
+            conversation.ScrollToBottomOnEntry();
         }
     }
 

@@ -34,14 +34,22 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         _navigator = navigator;
         // Closed from its own menu: the page leaves (the session on the host has ended).
         Actions = new SessionActionsViewModel(workspace, navigator, session, _ => navigator.Back());
+        WorkspaceMenu = new SessionWorkspaceViewModel(session, workspace, navigator, Actions, BackCommand)
+        {
+            PrimaryActionLabel = Text(MobileLangResourceKind.ConversationReconnect),
+            PrimaryActionCommand = ReloadCommand,
+        };
         session.PropertyChanged += OnSessionChanged;
         _ = OpenAsync();
     }
 
     public RemoteSession Session { get; }
 
-    /// <summary>The "⋯" menu, rename sheet, close confirmation, and toast notices.</summary>
+    /// <summary>The rename sheet, close confirmation, and toast notices.</summary>
     public SessionActionsViewModel Actions { get; }
+
+    /// <summary>The Scheme B capsule top bar and Scheme C top-right popover menu (files, changes, branches, sessions, actions).</summary>
+    public SessionWorkspaceViewModel WorkspaceMenu { get; }
 
     /// <summary>The live conversation once attached; null while opening or if opening failed.</summary>
     public RemoteConversation? Conversation => _conversation;
@@ -105,29 +113,15 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
     /// <summary>Raised when entries change so the page can stay pinned to the bottom.</summary>
     public event Action? TimelineChanged;
 
+    /// <summary>Raised when the view should force-pin and scroll to the very bottom (initial attach or sending a prompt).</summary>
+    public event Action? ScrollToBottomRequested;
+
     [RelayCommand]
     private void Back() => _navigator.Back();
 
-    /// <summary>Opens the "⋯" menu: reload conversation, project files/changes when supported, then standard session actions.</summary>
+    /// <summary>Opens the top-right workspace &amp; session popover menu.</summary>
     [RelayCommand]
-    private void OpenMenu()
-    {
-        var leading = new List<SessionMenuEntry>
-        {
-            new(Text(MobileLangResourceKind.ConversationReconnect), ReloadCommand),
-        };
-        if (_workspace.SupportsFiles(Session.Project.Host))
-        {
-            leading.Add(new(Text(MobileLangResourceKind.FilesBrowse), new RelayCommand(() =>
-                _navigator.ShowFiles(Session.Project, RemoteFolders.WorkspacePathOf(Session)))));
-        }
-        if (_workspace.SupportsGit(Session.Project.Host))
-        {
-            leading.Add(new(Text(MobileLangResourceKind.ChangesView), new RelayCommand(() =>
-                _navigator.ShowChanges(Session.Project, RemoteFolders.WorkspacePathOf(Session)))));
-        }
-        Actions.ShowMenu(Session, leading);
-    }
+    private void OpenMenu() => WorkspaceMenu.OpenMenuCommand.Execute(null);
 
     [RelayCommand]
     private async Task ReloadAsync()
@@ -161,7 +155,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         try
         {
             await _conversation.SendAsync(text, cancellationToken: _lifetime.Token);
-            TimelineChanged?.Invoke();
+            ScrollToBottomRequested?.Invoke();
         }
         catch (IOException e)
         {
@@ -251,6 +245,18 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
     }
 
     [RelayCommand]
+    private static void ToggleWork(ConversationAssistantEntry? entry)
+    {
+        if (entry is { CanExpandWork: true }) entry.IsWorkExpanded = !entry.IsWorkExpanded;
+    }
+
+    [RelayCommand]
+    private static void ToggleWorkStep(ConversationWorkStep? step)
+    {
+        if (step is { CanExpand: true }) step.IsExpanded = !step.IsExpanded;
+    }
+
+    [RelayCommand]
     private static void ToggleThought(ConversationAssistantEntry? entry)
     {
         if (entry is not null) entry.IsThoughtExpanded = !entry.IsThoughtExpanded;
@@ -295,6 +301,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         _lifetime.Cancel();
         _lifetime.Dispose();
         Session.PropertyChanged -= OnSessionChanged;
+        WorkspaceMenu.Dispose();
         DetachConversation();
     }
 
@@ -344,7 +351,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         conversation.Composer.PropertyChanged += OnComposerChanged;
         OnPropertyChanged(nameof(Conversation));
         NotifyState();
-        TimelineChanged?.Invoke();
+        ScrollToBottomRequested?.Invoke();
     }
 
     private void DetachConversation()
@@ -417,6 +424,7 @@ public sealed partial class ConversationViewModel : ObservableObject, IDisposabl
         OnPropertyChanged(nameof(ShowComposerTopRow));
         OnPropertyChanged(nameof(CanStop));
         OnPropertyChanged(nameof(CanSend));
+        WorkspaceMenu.UpdateLiveStatus(IsWorking, IsWaiting, IsError, ShowSpinner, HasStatusPill ? StatusText : null);
     }
 
     private static string LinkName(HostLink link) => Text(link switch

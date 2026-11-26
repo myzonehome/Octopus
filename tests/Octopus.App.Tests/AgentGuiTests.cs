@@ -1,6 +1,9 @@
 using System.Text.Json;
 using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Octopus.Acp.Dialects;
 using Octopus.Acp.Process;
 using Octopus.Acp.Protocol;
@@ -17,6 +20,8 @@ using Octopus.App.Workspace;
 using Octopus.Core.Agents;
 using Octopus.Platform;
 using Octopus.Storage;
+using Octopus.Ticker;
+using TKCode.Arc.Motion;
 using Xunit;
 
 namespace Octopus.App.Tests;
@@ -680,25 +685,10 @@ public class AgentGuiTests
             firstUserTurn.ReuseCommand.Execute(null);
             Assert.Equal("First task", vm.InputText);
 
-            // Exploration burst grouping folds >= 2 completed read/search tools while keeping edit/running prominent.
-            // Crucially, running tools can be expanded immediately during execution and survive subsequent tool additions in place.
+            // Single unified work area folds prior intermediate text + all tools in chronological order with lazy expansion.
             var lastAssistant = vm.Timeline.OfType<AssistantTurnItem>().Last();
-            var resetEvents = 0;
-            lastAssistant.PrimaryTools.CollectionChanged += (_, e) =>
-            {
-                if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset) resetEvents++;
-            };
             lastAssistant.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "run1", Kind = "execute", Title = "dotnet build", Status = "in_progress" });
-            var runningTool = Assert.Single(lastAssistant.PrimaryTools);
-            Assert.True(runningTool.CanExpand);
-            Assert.True(runningTool.IsRunningWithoutOutput);
-            runningTool.ToggleExpandedCommand.Execute(null);
-            Assert.True(runningTool.IsExpanded);
-
             lastAssistant.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "r1", Kind = "read", Title = "Read A.cs", Status = "completed" });
-            Assert.False(lastAssistant.HasExplorationGroup);
-            Assert.Equal(2, lastAssistant.PrimaryTools.Count);
-
             lastAssistant.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "s1", Kind = "search", Title = "Grep Foo", Status = "completed" });
             lastAssistant.UpsertToolCall(new AcpToolCallUpdate
             {
@@ -708,13 +698,21 @@ public class AgentGuiTests
                 Status = "completed",
                 Diffs = [new AcpToolDiff { Path = "A.cs", OldText = "a", NewText = "b" }],
             });
-            Assert.Equal(0, resetEvents); // in-place SyncCollection NEVER clears PrimaryTools during execution!
-            Assert.True(runningTool.IsExpanded);
-            Assert.True(lastAssistant.HasExplorationGroup);
-            Assert.Equal(2, lastAssistant.ExplorationTools.Count);
-            Assert.Equal(2, lastAssistant.PrimaryTools.Count);
-            Assert.Equal("e1", lastAssistant.PrimaryTools[1].ToolCallId);
-            Assert.True(lastAssistant.PrimaryTools[1].CanOpenDiff);
+            Assert.True(lastAssistant.HasWorkArea);
+            Assert.Equal(5, lastAssistant.WorkStepCount); // 1 folded prior text + 4 tool calls
+            Assert.Null(lastAssistant.ExpandedWorkSteps); // collapsed by default -> zero mounted step controls!
+            var editTool = Assert.Single(lastAssistant.ToolCalls, t => t.ToolCallId == "e1");
+            Assert.True(editTool.CanOpenDiff);
+            Assert.Equal("+1 -1", editTool.DiffStatsText);
+
+            // Manual expand materializes pure-text steps on demand and releases them when collapsed.
+            lastAssistant.ToggleWorkExpandedCommand.Execute(null);
+            Assert.True(lastAssistant.IsWorkExpanded);
+            Assert.NotNull(lastAssistant.ExpandedWorkSteps);
+            Assert.Equal(5, lastAssistant.ExpandedWorkSteps!.Count);
+            lastAssistant.ToggleWorkExpandedCommand.Execute(null);
+            Assert.False(lastAssistant.IsWorkExpanded);
+            Assert.Null(lastAssistant.ExpandedWorkSteps);
 
             // Usage cost formatting & NewSession reset.
             fakeFactory.Created[^1].Emit(new AcpUsageEvent(new AcpContextUsage { Used = 8000, Size = 100000, CostAmount = 0.04, CostCurrency = "USD" }));
@@ -735,7 +733,7 @@ public class AgentGuiTests
     }
 
     [AvaloniaFact]
-    public async Task Assistant_turn_caps_expanded_thought_height_folds_completed_commands_and_shows_live_status()
+    public async Task Assistant_turn_shows_3line_sliding_ticker_auto_collapses_on_complete_and_lazy_mounts_details()
     {
         var tempDir = Directory.CreateTempSubdirectory("octopus-acp-polish-").FullName;
         var fakeFactory = AppHost.Get<FakeAcpSessionFactory>();
@@ -758,6 +756,7 @@ public class AgentGuiTests
                 s.Emit(new AcpToolCallEvent(new AcpToolCallUpdate { ToolCallId = "cmd3", Kind = "execute", Title = "dotnet test", Command = "dotnet test", Status = "in_progress" }));
                 s.Emit(new AcpToolCallEvent(new AcpToolCallUpdate { ToolCallId = "cmd4", Kind = "execute", Title = "bad-cmd", Command = "bad-cmd", Status = "completed", ExitCode = 1 }));
                 await turnGate.Task;
+                s.Emit(new AcpTextDeltaEvent("assistant", "All checks reviewed.", null));
                 return new AcpPromptResult { StopReason = "end_turn" };
             };
         };
@@ -776,39 +775,57 @@ public class AgentGuiTests
             await WaitUntilAsync(() => vm.Timeline.OfType<AssistantTurnItem>().Any(t => t.ToolCalls.Count == 4));
             var turn = vm.Timeline.OfType<AssistantTurnItem>().Single();
 
-            // 1) Completed successful bash commands (>= 2) fold into CommandTools while running & non-zero exit stay in PrimaryTools.
-            Assert.True(turn.HasCommandGroup);
-            Assert.Equal(2, turn.CommandTools.Count);
-            Assert.Equal(["cmd1", "cmd2"], turn.CommandTools.Select(c => c.ToolCallId));
-            Assert.Equal(["cmd3", "cmd4"], turn.PrimaryTools.Select(c => c.ToolCallId));
-            Assert.False(string.IsNullOrWhiteSpace(turn.CommandGroupSummary));
+            // 1) Unified work area tracks all 5 steps (1 thought + 4 commands) & highlights failed non-zero exit.
+            Assert.True(turn.HasWorkArea);
+            Assert.Equal(5, turn.WorkStepCount);
+            Assert.True(turn.HasWorkFailures);
+            Assert.False(string.IsNullOrWhiteSpace(turn.WorkHeaderCounts));
 
-            // 2) Live status feedback is visible while streaming, rotates playful copy, hides when waiting, and hides on completion.
-            Assert.True(turn.ShowLiveStatus);
-            var firstPhrase = turn.LiveStatusText;
-            Assert.False(string.IsNullOrWhiteSpace(firstPhrase));
-            turn.AdvanceLiveStatus();
-            Assert.NotEqual(firstPhrase, turn.LiveStatusText);
+            // 2) Scheme C fixed 3-line sliding live ticker shows last 2 completed + 1 running step with fading opacity.
+            Assert.True(turn.ShowLiveTicker);
+            Assert.NotNull(turn.LiveTicker);
+            Assert.True(turn.LiveTicker!.Line0.IsVisible);
+            Assert.True(turn.LiveTicker.Line1.IsVisible);
+            Assert.True(turn.LiveTicker.Line2.IsVisible);
+            Assert.True(turn.LiveTicker.Line0.RowOpacity < turn.LiveTicker.Line1.RowOpacity);
+            Assert.True(turn.LiveTicker.Line1.RowOpacity < turn.LiveTicker.Line2.RowOpacity);
+            Assert.True(turn.LiveTicker.Line2.IsRunning);
+            Assert.Equal("dotnet test", turn.LiveTicker.Line2.Target);
+
+            // Waiting for user input hides the spinning ticker and shows waiting badge.
             turn.SetWaitingForInput(true);
-            Assert.False(turn.ShowLiveStatus);
+            Assert.False(turn.ShowLiveTicker);
+            Assert.Null(turn.LiveTicker);
+            Assert.True(turn.ShowWaitingBadge);
             turn.SetWaitingForInput(false);
-            Assert.True(turn.ShowLiveStatus);
+            Assert.True(turn.ShowLiveTicker);
+            Assert.NotNull(turn.LiveTicker);
 
-            // 3) Expanded Thinking block is wrapped in a height-capped ScrollArea (MaxHeight <= 240).
-            turn.ToggleThoughtCommand.Execute(null);
-            Assert.True(turn.IsThoughtExpanded);
+            // 3) Manually expanding work area hides ticker and lazy-mounts pure-text steps; expanding thought caps height <= 240.
+            turn.ToggleWorkExpandedCommand.Execute(null);
+            Assert.True(turn.IsWorkExpanded);
+            Assert.False(turn.ShowLiveTicker);
+            Assert.Null(turn.LiveTicker);
+            var thoughtStep = Assert.Single(turn.ExpandedWorkSteps!, s => s.IsThought);
+            thoughtStep.ToggleExpandedCommand.Execute(null);
+            Assert.True(thoughtStep.IsExpanded);
             window.UpdateLayout();
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             var thoughtScroll = Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(view)
                 .OfType<TKCode.Arc.ScrollArea>()
                 .FirstOrDefault(s => s.Classes.Contains("thoughtScroll"));
             Assert.NotNull(thoughtScroll);
-            Assert.InRange(thoughtScroll!.MaxHeight, 100, 260);
+            Assert.InRange(thoughtScroll!.MaxHeight, 100, 240);
 
+            // 4) Completing the turn auto-collapses the entire work area and unmounts ticker & expanded step controls!
             turnGate.TrySetResult(true);
             await sendTask;
             Assert.False(turn.IsStreaming);
-            Assert.False(turn.ShowLiveStatus);
+            Assert.False(turn.IsWorkExpanded);
+            Assert.Null(turn.ExpandedWorkSteps);
+            Assert.False(turn.ShowLiveTicker);
+            Assert.Null(turn.LiveTicker);
+            Assert.Contains("All checks reviewed.", turn.MarkdownText);
         }
         finally
         {
@@ -821,63 +838,283 @@ public class AgentGuiTests
     }
 
     [AvaloniaFact]
-    public void Assistant_turn_creates_independent_thought_blocks_across_tools_messages_and_message_ids()
+    public void Live_ticker_slides_rows_upward_with_spring_motion_and_respects_reduced_motion()
+    {
+        var turn = new AssistantTurnItem("codex", "Codex");
+        var host = new AgentGuiTabView();
+        var tickerHost = new ContentControl { Content = turn.LiveTicker };
+        // Mount inside AgentGuiTabView's DataTemplates so the real desktop ticker template & WorkTickerViewport run.
+        var container = new StackPanel();
+        container.DataTemplates.AddRange(host.DataTemplates);
+        container.Children.Add(tickerHost);
+
+        var window = new Window { Width = 640, Height = 300, Content = container };
+        window.Show();
+        try
+        {
+            static bool StepUntil(Func<bool> done, Action? onFrame = null, int milliseconds = 3000)
+            {
+                var end = DateTime.UtcNow.AddMilliseconds(milliseconds);
+                while (DateTime.UtcNow < end)
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                    Dispatcher.UIThread.RunJobs();
+                    onFrame?.Invoke();
+                    if (done()) return true;
+                    Thread.Sleep(16);
+                }
+                return false;
+            }
+
+            // Start with 1 step (Preparing -> Step 1) and settle.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t1", Kind = "edit", Title = "File A.cs", Status = "completed" });
+            tickerHost.Content = turn.LiveTicker;
+            Frames.Pump();
+            window.UpdateLayout();
+
+            var viewport = tickerHost.GetVisualDescendants().OfType<WorkTickerViewport>().Single();
+            Assert.True(StepUntil(() => !viewport.IsRunning));
+            Assert.True(viewport.MeasuredRowHeight > 8);
+            var rowH = viewport.MeasuredRowHeight;
+            var stepY = rowH + viewport.Spacing;
+            Assert.Equal(rowH, viewport.Bounds.Height, 1.0);
+
+            // Grow 1 -> 2 -> 3 rows smoothly.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t2", Kind = "edit", Title = "File B.cs", Status = "completed" });
+            var growthHeights = new List<double>();
+            Assert.True(StepUntil(() => !viewport.IsRunning, () => growthHeights.Add(viewport.Bounds.Height)));
+            var twoRowHeight = 2 * rowH + viewport.Spacing;
+            Assert.Contains(growthHeights, h => h > rowH + 0.5 && h < twoRowHeight - 0.5);
+            Assert.Equal(twoRowHeight, viewport.Bounds.Height, 1.0);
+
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t3", Kind = "edit", Title = "File C.cs", Status = "in_progress" });
+            Assert.True(StepUntil(() => !viewport.IsRunning));
+            var threeRowHeight = 3 * rowH + 2 * viewport.Spacing;
+            Assert.Equal(threeRowHeight, viewport.Bounds.Height, 1.0);
+            Assert.Equal(0.0, viewport.GetSlotOffsetY(0), 0.5);
+            Assert.Equal(stepY, viewport.GetSlotOffsetY(1), 0.5);
+            Assert.Equal(2 * stepY, viewport.GetSlotOffsetY(2), 0.5);
+
+            // In-place update of t3 must NOT trigger a slide animation.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t3", Kind = "edit", Title = "File C.cs", Status = "completed" });
+            Assert.False(viewport.IsRunning);
+            Assert.Equal(0.0, viewport.RemainingShift, 0.01);
+
+            // 3 -> 3 upward shift: t4 enters at bottom, t1 exits at top with smooth upward slide and constant height.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t4", Kind = "edit", Title = "File D.cs", Status = "in_progress" });
+            Assert.True(viewport.IsRunning);
+            Assert.True(viewport.IsExitVisible(0));
+            Assert.Equal("File A.cs", turn.LiveTicker!.Exit0.Target);
+
+            var line0Ys = new List<double>();
+            var exit0Ys = new List<double>();
+            var heights = new List<double>();
+            Assert.True(StepUntil(
+                () => !viewport.IsRunning,
+                () =>
+                {
+                    line0Ys.Add(viewport.GetSlotOffsetY(0));
+                    if (viewport.IsExitVisible(0)) exit0Ys.Add(viewport.GetExitOffsetY(0));
+                    heights.Add(viewport.Bounds.Height);
+                }));
+
+            Assert.True(line0Ys.Count >= 3, $"expected smooth upward frames, got {line0Ys.Count}");
+            Assert.Contains(line0Ys, y => y > 0.5 && y < stepY - 0.5);
+            Assert.Contains(exit0Ys, y => y < -0.5 && y > -stepY + 0.5);
+            Assert.All(heights, h => Assert.Equal(threeRowHeight, h, 1.0));
+
+            // Settled: exiting ghost hidden and slots rest at exact positions & opacities.
+            Assert.False(viewport.IsExitVisible(0));
+            Assert.False(turn.LiveTicker.Exit0.IsVisible);
+            Assert.Equal(0.0, viewport.GetSlotOffsetY(0), 0.5);
+            Assert.Equal(stepY, viewport.GetSlotOffsetY(1), 0.5);
+            Assert.Equal(2 * stepY, viewport.GetSlotOffsetY(2), 0.5);
+            Assert.Equal(0.38, viewport.GetSlotOpacity(0), 0.02);
+            Assert.Equal(0.66, viewport.GetSlotOpacity(1), 0.02);
+            Assert.Equal(1.0, viewport.GetSlotOpacity(2), 0.02);
+
+            // Mid-flight rapid shift: t5 starts sliding, then t6 arrives mid-flight without jumping backwards.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t4", Kind = "edit", Title = "File D.cs", Status = "completed" });
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t5", Kind = "edit", Title = "File E.cs", Status = "in_progress" });
+            Assert.True(StepUntil(() => viewport.RemainingShift < 0.75 && viewport.RemainingShift > 0.15));
+            var midVisualYOfSlot1 = viewport.GetSlotOffsetY(1); // File D.cs is currently at slot 1
+
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t5", Kind = "edit", Title = "File E.cs", Status = "completed" });
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t6", Kind = "edit", Title = "File F.cs", Status = "in_progress" });
+            // File D.cs shifted from slot 1 -> slot 0; its visual Y on screen stays continuous!
+            Assert.Equal(midVisualYOfSlot1, viewport.GetSlotOffsetY(0), 1.5);
+            Assert.True(StepUntil(() => !viewport.IsRunning));
+            Assert.Equal(0.0, viewport.GetSlotOffsetY(0), 0.5);
+
+            // Motion off: shifts settle immediately without waiting for spring frames.
+            ArcMotion.SetLevel(window, ArcMotionLevel.Off);
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t6", Kind = "edit", Title = "File F.cs", Status = "completed" });
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "t7", Kind = "edit", Title = "File G.cs", Status = "in_progress" });
+            Assert.False(viewport.IsRunning);
+            Assert.False(viewport.IsExitVisible(0));
+            Assert.Equal(0.0, viewport.GetSlotOffsetY(0), 0.5);
+            Assert.Equal("File G.cs", turn.LiveTicker.Line2.Target);
+        }
+        finally
+        {
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+            turn.Complete();
+        }
+    }
+
+    [AvaloniaFact]
+    public void Assistant_turn_records_independent_thought_steps_across_tools_and_message_ids_inside_single_work_area()
     {
         var turn = new AssistantTurnItem("agy", "Antigravity CLI");
         try
         {
-            // Step 1: initial thought split across 2 streaming deltas -> single ThoughtBlock #1
+            // Step 1: initial thought split across 2 streaming deltas -> single thought step #1
             turn.AppendThought("First part ");
             turn.AppendThought("of thought 1.");
-            var t1 = Assert.IsType<ThoughtBlockViewModel>(Assert.Single(turn.Blocks));
-            Assert.Equal("First part of thought 1.", t1.Text);
+            var t1 = Assert.Single(turn.WorkSteps);
+            Assert.True(t1.IsThought);
+            Assert.Equal("First part of thought 1.", t1.ThoughtText);
 
-            // Step 2: tool burst arrives -> creates ToolRunBlock #1
+            // Step 2: tool burst arrives -> finishes thought #1 and appends tool steps to the same work area
             turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "tc1", Kind = "execute", Title = "ls -la", Command = "ls -la", Status = "in_progress" });
             turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "tc2", Kind = "execute", Title = "ls src", Command = "ls src", Status = "completed", ExitCode = 0 });
-            Assert.Equal(2, turn.Blocks.Count);
-            var run1 = Assert.IsType<ToolRunBlockViewModel>(turn.Blocks[1]);
-            Assert.Equal(2, run1.ToolCalls.Count);
+            Assert.Equal(3, turn.WorkStepCount);
+            Assert.False(t1.IsRunning);
 
-            // Step 3: subsequent reasoning after tools -> MUST create an independent ThoughtBlock #2 (never appended to Thought #1!)
+            // Step 3: subsequent reasoning after tools -> creates an independent thought step #2 (never merged into #1!)
             turn.AppendThought("Second thought after tools.", messageId: "m2");
-            Assert.Equal(3, turn.Blocks.Count);
-            var t2 = Assert.IsType<ThoughtBlockViewModel>(turn.Blocks[2]);
-            Assert.Equal("First part of thought 1.", t1.Text);
-            Assert.Equal("Second thought after tools.", t2.Text);
+            Assert.Equal(4, turn.WorkStepCount);
+            var t2 = turn.WorkSteps[3];
+            Assert.True(t2.IsThought);
+            Assert.Equal("First part of thought 1.", t1.ThoughtText);
+            Assert.Equal("Second thought after tools.", t2.ThoughtText);
 
-            // Late completion update for tc1 updates run1 in place and does NOT split ThoughtBlock #2!
+            // Late completion update for tc1 updates in place without duplicating steps.
             turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "tc1", Status = "completed", ExitCode = 0 });
-            Assert.Equal(3, turn.Blocks.Count);
-            Assert.True(run1.HasCommandGroup);
-            Assert.Equal(2, run1.CommandTools.Count);
+            Assert.Equal(4, turn.WorkStepCount);
 
-            turn.AppendThought(" Still thought 2.", messageId: "m2");
-            Assert.Equal(3, turn.Blocks.Count);
-            Assert.Equal("Second thought after tools. Still thought 2.", t2.Text);
-
-            // Step 4: new reasoning with a different messageId -> independent ThoughtBlock #3
+            // New reasoning with a different messageId -> independent thought step #3
             turn.AppendThought("Third thought with new messageId.", messageId: "m3");
-            Assert.Equal(4, turn.Blocks.Count);
-            var t3 = Assert.IsType<ThoughtBlockViewModel>(turn.Blocks[3]);
-            Assert.Equal("Third thought with new messageId.", t3.Text);
+            Assert.Equal(5, turn.WorkStepCount);
+            var t3 = turn.WorkSteps[4];
+            Assert.Equal("Third thought with new messageId.", t3.ThoughtText);
 
-            // Independent expand/collapse state per thought block
-            t2.ToggleCommand.Execute(null);
+            // Independent expand/collapse state per step (details lazy-mounted only when expanded)
+            Assert.Null(t2.ExpandedDetail);
+            t2.ToggleExpandedCommand.Execute(null);
             Assert.False(t1.IsExpanded);
             Assert.True(t2.IsExpanded);
+            Assert.Same(t2, t2.ExpandedDetail);
             Assert.False(t3.IsExpanded);
 
-            // Step 5: final markdown response -> MarkdownBlock at the end
+            // Step 4: final markdown response collapses live ticker immediately and populates single MarkdownText
             turn.AppendMessage("Final answer.");
-            Assert.Equal(5, turn.Blocks.Count);
-            var md = Assert.IsType<MarkdownBlockViewModel>(turn.Blocks[4]);
-            Assert.Equal("Final answer.", md.Text);
+            Assert.False(turn.ShowLiveTicker);
             Assert.Equal("Final answer.", turn.MarkdownText);
+            Assert.NotNull(turn.ResponseMarkdown);
         }
         finally
         {
             turn.Complete();
+        }
+    }
+
+    [AvaloniaFact]
+    public void Assistant_turn_folds_intermediate_text_into_work_area_without_counting_text_and_keeps_only_final_text_outside()
+    {
+        var turn = new AssistantTurnItem("codex", "Codex");
+        try
+        {
+            // Intermediate text 1 -> Tool 1 -> Intermediate text 2 -> Tool 2 -> Final output text
+            turn.AppendMessage("Let me inspect the repository first.");
+            Assert.Equal("Let me inspect the repository first.", turn.MarkdownText);
+
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "r1", Kind = "read", Title = "Read Program.cs", Status = "in_progress" });
+            Assert.False(turn.HasMarkdown);
+            Assert.Equal("", turn.MarkdownText);
+            Assert.Equal(2, turn.WorkSteps.Count);
+            Assert.True(turn.WorkSteps[0].IsText);
+            Assert.Equal("Let me inspect the repository first.", turn.WorkSteps[0].NoteText);
+            Assert.Equal("", turn.WorkSteps[0].Verb);
+            Assert.True(turn.WorkSteps[1].IsTool);
+            // Live ticker skips folded text steps and shows only actual work operations.
+            Assert.NotNull(turn.LiveTicker);
+            Assert.True(turn.LiveTicker!.Line0.IsVisible);
+            Assert.Equal("Read Program.cs", turn.LiveTicker.Line0.Target);
+            Assert.False(turn.LiveTicker.Line1.IsVisible);
+
+            // In-place update of existing tool does not duplicate or alter folded text.
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "r1", Status = "completed" });
+
+            turn.AppendMessage("Found the issue, updating now.");
+            Assert.Equal("Found the issue, updating now.", turn.MarkdownText);
+
+            turn.UpsertToolCall(new AcpToolCallUpdate { ToolCallId = "e1", Kind = "edit", Title = "Edit Program.cs", Status = "completed" });
+            Assert.False(turn.HasMarkdown);
+            Assert.Equal(4, turn.WorkSteps.Count);
+            Assert.True(turn.WorkSteps[2].IsText);
+            Assert.Equal("Found the issue, updating now.", turn.WorkSteps[2].NoteText);
+            Assert.True(turn.WorkSteps[3].IsTool);
+
+            turn.AppendMessage("All fixed and verified.");
+            turn.Complete();
+
+            // Final display: collapsed work area (counting ONLY the 2 tools, never text) + final output text underneath.
+            Assert.True(turn.HasWorkArea);
+            Assert.False(turn.IsWorkExpanded);
+            Assert.Equal("All fixed and verified.", turn.MarkdownText);
+            Assert.Equal("All fixed and verified.", turn.CopyReplyValue);
+            Assert.Contains("2", turn.WorkHeaderTitle);
+            Assert.DoesNotContain("4", turn.WorkHeaderTitle);
+            Assert.Equal(4, turn.WorkSteps.Count);
+
+            // Expanding work area reveals folded text steps in chronological order with lazy detail expansion.
+            turn.ToggleWorkExpandedCommand.Execute(null);
+            Assert.NotNull(turn.ExpandedWorkSteps);
+            Assert.Equal([WorkStepKind.Text, WorkStepKind.Tool, WorkStepKind.Text, WorkStepKind.Tool],
+                turn.ExpandedWorkSteps!.Select(s => s.StepKind));
+            Assert.Null(turn.ExpandedWorkSteps[0].ExpandedDetail);
+            turn.ExpandedWorkSteps[0].ToggleExpandedCommand.Execute(null);
+            Assert.Same(turn.ExpandedWorkSteps[0], turn.ExpandedWorkSteps[0].ExpandedDetail);
+        }
+        finally
+        {
+            if (turn.IsStreaming) turn.Complete();
+        }
+    }
+
+    [AvaloniaFact]
+    public void User_turn_places_action_buttons_below_the_bubble()
+    {
+        var userTurn = new UserTurnItem("1.默认打开\n2. 一并实现", null, _ => { });
+        var host = new AgentGuiTabView();
+        var presenter = new ContentControl { Content = userTurn };
+        var container = new StackPanel();
+        container.DataTemplates.AddRange(host.DataTemplates);
+        container.Children.Add(presenter);
+
+        var window = new Window { Width = 720, Height = 300, Content = container };
+        window.Show();
+        try
+        {
+            window.UpdateLayout();
+            Dispatcher.UIThread.RunJobs();
+
+            var bubble = presenter.GetVisualDescendants().OfType<Border>().Single(b => b.Classes.Contains("userBubble"));
+            var actions = presenter.GetVisualDescendants().OfType<StackPanel>().Single(p => p.Classes.Contains("turnActions"));
+
+            // Actions must be a sibling below the bubble, NOT nested inside the bubble.
+            Assert.DoesNotContain(actions, bubble.GetVisualDescendants());
+            var bubbleBottom = Avalonia.VisualExtensions.TranslatePoint(bubble, new Avalonia.Point(0, bubble.Bounds.Height), window)!.Value.Y;
+            var actionsTop = Avalonia.VisualExtensions.TranslatePoint(actions, new Avalonia.Point(0, 0), window)!.Value.Y;
+            Assert.True(actionsTop >= bubbleBottom - 0.5, $"Expected actionsTop ({actionsTop}) >= bubbleBottom ({bubbleBottom})");
+        }
+        finally
+        {
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
         }
     }
 
@@ -1311,29 +1548,61 @@ public class AgentGuiTests
         {
             await WaitUntilAsync(() => vm.State == AgentGuiState.Ready);
 
+            // Only a single SendButton is rendered in the composer (no separate Stop / SendNow buttons).
+            Assert.Null(view.FindControl<TKCode.Arc.Button>("StopButton"));
+            Assert.Null(view.FindControl<TKCode.Arc.Button>("SendNowButton"));
+            var sendButton = view.FindControl<TKCode.Arc.Button>("SendButton");
+            var loadingVisual = view.FindControl<Avalonia.Controls.Panel>("SendButtonLoadingVisual");
+            var sendIcon = view.FindControl<TKCode.Arc.Icons.Lucide.LucideIcon>("SendButtonSendIcon");
+            Assert.NotNull(sendButton);
+            Assert.NotNull(loadingVisual);
+            Assert.NotNull(sendIcon);
+
+            // Idle + empty composer: shows send icon (disabled).
+            Assert.False(vm.ShowComposerLoading);
+            Assert.False(loadingVisual!.IsVisible);
+            Assert.True(sendIcon!.IsVisible);
+            Assert.False(vm.ComposerActionCommand.CanExecute(null));
+
             // 1. Start a holding turn so the agent stays busy while we manipulate the queue tray.
             vm.InputText = "Hold 1";
-            var turn1Task = vm.SendPromptAsync();
+            Assert.False(vm.ShowComposerLoading);
+            Assert.True(vm.ComposerActionCommand.CanExecute(null));
+            var turn1Task = vm.ComposerActionCommand.ExecuteAsync(null);
             await WaitUntilAsync(() => vm.State == AgentGuiState.Working);
 
-            var sendNowButton = view.FindControl<TKCode.Arc.Button>("SendNowButton");
-            Assert.NotNull(sendNowButton);
-            Assert.True(sendNowButton!.IsVisible);
+            // Active turn + empty composer: single button switches to loading state (still clickable to stop).
+            Assert.True(sendButton!.IsVisible);
+            Assert.True(vm.ShowComposerLoading);
+            Assert.True(loadingVisual.IsVisible);
+            Assert.False(sendIcon.IsVisible);
+            Assert.True(vm.ComposerActionCommand.CanExecute(null));
+            Assert.False(vm.CanSend);
             Assert.False(vm.CanSendNow);
 
-            // Queue 3 prompts (first one carries an attachment).
+            // Queue 3 prompts (first one carries an attachment). Typing/attaching switches the single button
+            // back to send state and clicking it enqueues the prompt by default.
             vm.AddAttachment(new AcpPromptAttachment { Kind = "file", Path = Path.Combine(tempDir, "README.md"), DisplayName = "README.md" });
+            Assert.False(vm.ShowComposerLoading);
+            Assert.False(loadingVisual.IsVisible);
+            Assert.True(sendIcon.IsVisible);
             vm.InputText = "Task A\nsecond line";
             Assert.True(vm.CanSend);
             Assert.True(vm.CanSendNow);
             Assert.True(vm.SendPromptCommand.CanExecute(null));
             Assert.True(vm.SendPromptNowCommand.CanExecute(null));
-            await vm.SendPromptAsync();
+            Assert.True(vm.ComposerActionCommand.CanExecute(null));
+            await vm.ComposerActionCommand.ExecuteAsync(null);
+
+            // Input cleared after queueing -> single button returns to loading state.
+            Assert.True(vm.ShowComposerLoading);
+            Assert.True(loadingVisual.IsVisible);
+            Assert.False(sendIcon.IsVisible);
 
             vm.InputText = "Task B";
-            await vm.SendPromptAsync();
+            await vm.ComposerActionCommand.ExecuteAsync(null);
             vm.InputText = "Task C";
-            await vm.SendPromptAsync();
+            await vm.ComposerActionCommand.ExecuteAsync(null);
 
             window.UpdateLayout();
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
@@ -1436,7 +1705,9 @@ public class AgentGuiTests
             vm.InputText = "Paused 2";
             await vm.SendPromptAsync();
 
-            await vm.CancelTurnAsync();
+            // Clicking the single button while composer is empty (loading state) cancels the active turn and pauses queue draining.
+            Assert.True(vm.ShowComposerLoading);
+            await vm.ComposerActionCommand.ExecuteAsync(null);
             await turn3Task;
 
             Assert.Equal(AgentGuiState.Ready, vm.State);
@@ -2259,6 +2530,155 @@ public class AgentGuiTests
             window.Close();
             Avalonia.Threading.Dispatcher.UIThread.RunJobs();
             try { Directory.Delete(tempDir, true); } catch (IOException) { }
+        }
+    }
+
+    [AvaloniaFact]
+    public async Task Streaming_after_new_prompt_stays_pinned_at_bottom_and_single_jump_reaches_true_end()
+    {
+        var tempDir = Directory.CreateTempSubdirectory("octopus-scroll-pin-").FullName;
+        var fakeFactory = AppHost.Get<FakeAcpSessionFactory>();
+        var settings = AppHost.Get<ISettingsStore>();
+        settings.Update(s => s.Agents.DefaultSurface = AgentSurface.Gui);
+
+        var projects = AppHost.Get<IProjectService>();
+        var project = projects.AddProject(tempDir, "scroll-pin");
+        var opener = AppHost.Get<IItemOpener>();
+        var registry = AppHost.Get<ITabContentRegistry>();
+
+        var turnGate = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        FakeAcpSession? activeSession = null;
+
+        fakeFactory.ConfigureNext = session =>
+        {
+            activeSession = session;
+            session.StartHandler = (s, _) =>
+            {
+                // Replay 10 variable-height historical turns so total height far exceeds viewport height.
+                for (var i = 1; i <= 10; i++)
+                {
+                    s.Emit(new AcpUserMessageEvent($"Historical prompt #{i}", $"u-{i}") { IsReplay = true });
+                    var paragraphs = string.Join("\n\n", Enumerable.Range(1, 4).Select(p =>
+                        $"Historical turn {i}, paragraph {p}: reviewing module architecture, state transitions, and layout invariants across multiple lines so each turn has realistic height."));
+                    s.Emit(new AcpTextDeltaEvent("assistant", paragraphs, $"a-{i}") { IsReplay = true });
+                }
+            };
+            session.PromptHandler = async (_, _, _, ct) =>
+            {
+                await turnGate.Task.WaitAsync(ct);
+                return new AcpPromptResult { StopReason = "end_turn" };
+            };
+        };
+
+        var item = opener.OpenAgent("opencode")!;
+        var view = Assert.IsType<AgentGuiTabView>(registry.GetOrCreate(project, item));
+        var vm = Assert.IsType<AgentGuiTabViewModel>(view.DataContext);
+        var window = new Window { Width = 1100, Height = 640, Content = view };
+        window.Show();
+        try
+        {
+            await WaitUntilAsync(() => vm.State == AgentGuiState.Ready && vm.Timeline.Count == 20);
+            PumpLayout(window);
+
+            var scroller = Avalonia.VisualTree.VisualExtensions.GetVisualDescendants(view)
+                .OfType<TKCode.Arc.ScrollArea>()
+                .First(s => s.Name == "PART_ScrollViewer");
+
+            Assert.True(scroller.ScrollBarMaximum.Y > 600, $"Expected tall timeline, got ScrollBarMaximum.Y={scroller.ScrollBarMaximum.Y}");
+            Assert.True(vm.IsPinnedToBottom);
+            Assert.False(vm.ShowJumpToBottom);
+            Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+                $"Expected replay to land at bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+
+            // Submit a new prompt and stream output in multiple steps: scrollbar must never drift upward into history.
+            vm.InputText = "Please inspect the layout and explain every detail.";
+            var sendTask = vm.SendPromptAsync();
+            PumpLayout(window);
+
+            var previousOffsetY = scroller.Offset.Y;
+            Assert.True(vm.IsPinnedToBottom, "Submitting a new prompt must remain pinned to bottom.");
+            Assert.False(vm.ShowJumpToBottom);
+
+            for (var chunk = 1; chunk <= 8; chunk++)
+            {
+                var block = $"\n\n### Section {chunk}\n"
+                    + string.Join("\n", Enumerable.Range(1, 6).Select(line =>
+                        $"- Streaming output item {chunk}.{line}: verifying vertical scroll stability while new content grows."));
+                activeSession!.Emit(new AcpTextDeltaEvent("assistant", block, "live-msg"));
+                await Task.Delay(50);
+                PumpLayout(window);
+
+                Assert.True(vm.IsPinnedToBottom,
+                    $"Lost bottom pin at chunk {chunk}: offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}, extent={scroller.Extent.Height}");
+                Assert.False(vm.ShowJumpToBottom, $"Jump-to-bottom appeared unexpectedly at chunk {chunk}.");
+                Assert.True(scroller.Offset.Y >= previousOffsetY - 1.0 || scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+                    $"Scrollbar drifted upward at chunk {chunk}: prev={previousOffsetY}, cur={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+                Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+                    $"Not at bottom at chunk {chunk}: offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+                previousOffsetY = scroller.Offset.Y;
+            }
+
+            // Now user explicitly scrolls up into historical conversation while streaming continues:
+            // viewport must stay in history and NOT yank user back down.
+            scroller.Offset = new Avalonia.Vector(0, 120);
+            PumpLayout(window);
+            Assert.False(vm.IsPinnedToBottom, "Scrolling up into history must unpin auto-scroll.");
+            Assert.True(vm.ShowJumpToBottom);
+
+            var pinnedHistoryOffset = scroller.Offset.Y;
+            activeSession!.Emit(new AcpTextDeltaEvent("assistant", "\n\nMore streamed output while user reads history.\nLine 2\nLine 3\nLine 4", "live-msg"));
+            await Task.Delay(50);
+            PumpLayout(window);
+            Assert.False(vm.IsPinnedToBottom, "Streaming while unpinned must not force re-pin.");
+            Assert.True(Math.Abs(scroller.Offset.Y - pinnedHistoryOffset) <= 2.0,
+                $"Expected history offset to stay at {pinnedHistoryOffset}, got {scroller.Offset.Y}");
+
+            // Finish turn while user is still scrolled up, then click "Jump to latest" ONCE:
+            // must reach the true bottom in a single click (not 4 clicks).
+            turnGate.TrySetResult(true);
+            await sendTask;
+            PumpLayout(window);
+
+            vm.JumpToBottomCommand.Execute(null);
+            PumpLayout(window);
+
+            Assert.True(vm.IsPinnedToBottom, "Single JumpToBottom click must pin to bottom.");
+            Assert.False(vm.ShowJumpToBottom, "JumpToBottom button must disappear after a single click.");
+            Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+                $"Single JumpToBottom click must reach true bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+
+            // Re-entering the GUI tab after scrolling up must restore the scrollbar to the very bottom.
+            scroller.Offset = new Avalonia.Vector(0, 80);
+            PumpLayout(window);
+            Assert.False(vm.IsPinnedToBottom);
+
+            window.Content = null;
+            PumpLayout(window);
+            window.Content = view;
+            PumpLayout(window);
+
+            Assert.True(vm.IsPinnedToBottom, "Re-entering the GUI tab must pin to bottom.");
+            Assert.False(vm.ShowJumpToBottom);
+            Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+                $"Re-entering the GUI tab must scroll to the very bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+        }
+        finally
+        {
+            turnGate.TrySetResult(true);
+            await vm.CloseAsync();
+            vm.Dispose();
+            window.Close();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+            try { Directory.Delete(tempDir, true); } catch (IOException) { }
+        }
+    }
+
+    private static void PumpLayout(Window window)
+    {
+        for (var i = 0; i < 4; i++)
+        {
+            window.UpdateLayout();
+            Avalonia.Threading.Dispatcher.UIThread.RunJobs();
         }
     }
 

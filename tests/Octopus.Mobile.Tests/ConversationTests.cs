@@ -1,6 +1,9 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
+using Avalonia.Threading;
+using Avalonia.VisualTree;
 using Octopus.Mobile.Common;
 using Octopus.Mobile.Conversations;
 using Octopus.Mobile.Files;
@@ -9,7 +12,9 @@ using Octopus.Mobile.Sessions;
 using Octopus.Mobile.Workspace;
 using Octopus.Remote.Protocol;
 using Octopus.Remote.Tests;
+using Octopus.Ticker;
 using TKCode.Arc.Mobile;
+using TKCode.Arc.Motion;
 using Xunit;
 
 namespace Octopus.Mobile.Tests;
@@ -204,21 +209,343 @@ public class ConversationTests
         Assert.Equal(5, vm.Entries.Count);
 
         var assistant = vm.Entries.OfType<ConversationAssistantEntry>().First();
-        Assert.False(assistant.IsThoughtExpanded);
-        vm.ToggleThoughtCommand.Execute(assistant);
-        Assert.True(assistant.IsThoughtExpanded);
+        Assert.True(assistant.HasWorkArea);
+        Assert.Equal(4, assistant.WorkStepCount); // 1 thought + 3 tools folded into one unified work area
+        Assert.False(assistant.IsWorkExpanded);
+        Assert.Null(assistant.ExpandedWorkSteps); // collapsed by default -> zero step controls!
+        Assert.Null(assistant.LiveTicker);
 
-        var editTool = assistant.Tools.Single(tool => tool.HasDiff);
-        Assert.False(editTool.IsExpanded);
-        vm.ToggleToolCommand.Execute(editTool);
-        Assert.True(editTool.IsExpanded);
+        // Tap unified work area to lazy-mount pure-text steps, then tap the edit step to lazy-mount its diff.
+        vm.ToggleWorkCommand.Execute(assistant);
+        Assert.True(assistant.IsWorkExpanded);
+        Assert.NotNull(assistant.ExpandedWorkSteps);
+        Assert.Equal(4, assistant.ExpandedWorkSteps!.Count);
 
-        // "⋯" menu starts with reload conversation + files/changes, and has no restart for GUI sessions.
-        var overlays = page.FindControl<SessionActionOverlays>("Overlays")!;
+        var editStep = assistant.ExpandedWorkSteps.Single(step => step.IsTool && step.Tool!.HasDiff);
+        Assert.Null(editStep.ExpandedDetail);
+        vm.ToggleWorkStepCommand.Execute(editStep);
+        Assert.True(editStep.IsExpanded);
+        Assert.Same(editStep, editStep.ExpandedDetail);
+        Assert.True(editStep.Tool!.IsExpanded);
+
+        // Collapsing the work area releases expanded steps and resets child expansion flags.
+        vm.ToggleWorkCommand.Execute(assistant);
+        Assert.False(assistant.IsWorkExpanded);
+        Assert.Null(assistant.ExpandedWorkSteps);
+        Assert.False(editStep.IsExpanded);
+        Assert.Null(editStep.ExpandedDetail);
+
+        // Top-right popover menu shows workspace navigation (project files, changes, branches, sessions) + reload + standard session actions (no restart for GUI).
+        var overlay = page.FindControl<SessionWorkspaceOverlay>("WorkspaceOverlay")!;
         vm.OpenMenuCommand.Execute(null);
         Phone.Pump();
-        Assert.True(overlays.IsMenuOpen);
-        Assert.Equal(["重新载入对话", "浏览文件", "查看改动", "重命名", "用相同设置再开一个", "会话详情", "关闭会话"], overlays.MenuLabels);
+        Assert.True(overlay.IsPopoverOpen);
+        Assert.Equal(["项目文件管理", "查看改动", "分支查看", "Session 查看", "重新载入对话", "重命名", "用相同设置再开一个", "会话详情", "关闭会话"], vm.WorkspaceMenu.VisibleMenuLabels());
+    }
+
+    [Fact]
+    public void Assistant_work_area_shows_3line_sliding_ticker_while_streaming_and_auto_collapses_on_finish()
+    {
+        using var conv = CreateStub();
+        var timeline = conv.Timeline;
+
+        timeline.ApplySnapshot(new AcpSnapshotMessage
+        {
+            ItemId = "s1",
+            Sequence = 1,
+            State = AcpStates.Working,
+            Entries =
+            [
+                new()
+                {
+                    Id = "a1",
+                    Kind = AcpEntryKinds.Assistant,
+                    Thought = "Checking routes and tests",
+                    IsStreaming = true,
+                    Tools =
+                    [
+                        new() { Id = "t1", Title = "Search routes", Kind = "search", Status = "completed" },
+                        new() { Id = "t2", Title = "Read api.ts", Kind = "read", Status = "completed" },
+                        new() { Id = "t3", Title = "dotnet test", Kind = "execute", Status = "in_progress" },
+                        new() { Id = "t4", Title = "bad-cmd", Kind = "execute", Status = "completed", ExitCode = 1 },
+                    ],
+                },
+            ],
+        });
+
+        var turn = Assert.IsType<ConversationAssistantEntry>(Assert.Single(conv.Entries));
+        Assert.Equal(5, turn.WorkStepCount);
+        Assert.True(turn.HasWorkFailures);
+        Assert.True(turn.ShowLiveTicker);
+        Assert.NotNull(turn.LiveTicker);
+        Assert.True(turn.LiveTicker!.Line0.IsVisible);
+        Assert.True(turn.LiveTicker.Line1.IsVisible);
+        Assert.True(turn.LiveTicker.Line2.IsVisible);
+        Assert.True(turn.LiveTicker.Line0.RowOpacity < turn.LiveTicker.Line1.RowOpacity);
+        Assert.True(turn.LiveTicker.Line1.RowOpacity < turn.LiveTicker.Line2.RowOpacity);
+        Assert.True(turn.LiveTicker.Line2.IsRunning);
+        Assert.Equal("dotnet test", turn.LiveTicker.Line2.Target);
+
+        // Manually expand while streaming -> ticker hides, steps materialize.
+        turn.IsWorkExpanded = true;
+        Assert.False(turn.ShowLiveTicker);
+        Assert.Null(turn.LiveTicker);
+        Assert.NotNull(turn.ExpandedWorkSteps);
+
+        // Turn finishes -> auto-collapses work area and unmounts ticker & expanded step list!
+        timeline.Apply(new AcpUpdateMessage
+        {
+            Sequence = 2,
+            State = AcpStates.Ready,
+            Upserts =
+            [
+                new()
+                {
+                    Id = "a1",
+                    Kind = AcpEntryKinds.Assistant,
+                    Thought = "Checking routes and tests",
+                    Text = "All done.",
+                    IsStreaming = false,
+                    Duration = "5s",
+                    Tools =
+                    [
+                        new() { Id = "t1", Title = "Search routes", Kind = "search", Status = "completed" },
+                        new() { Id = "t2", Title = "Read api.ts", Kind = "read", Status = "completed" },
+                        new() { Id = "t3", Title = "dotnet test", Kind = "execute", Status = "completed" },
+                        new() { Id = "t4", Title = "bad-cmd", Kind = "execute", Status = "completed", ExitCode = 1 },
+                    ],
+                },
+            ],
+        });
+
+        Assert.False(turn.IsStreaming);
+        Assert.False(turn.IsWorkExpanded);
+        Assert.Null(turn.ExpandedWorkSteps);
+        Assert.False(turn.ShowLiveTicker);
+        Assert.Null(turn.LiveTicker);
+        Assert.Equal("All done.", turn.Text);
+    }
+
+    [Fact]
+    public void Assistant_work_area_folds_intermediate_notes_in_order_without_counting_them_in_header()
+    {
+        using var conv = CreateStub();
+        var timeline = conv.Timeline;
+
+        timeline.ApplySnapshot(new AcpSnapshotMessage
+        {
+            ItemId = "s1",
+            Sequence = 1,
+            State = AcpStates.Ready,
+            Entries =
+            [
+                new()
+                {
+                    Id = "a1",
+                    Kind = AcpEntryKinds.Assistant,
+                    Text = "Final summary.",
+                    IsStreaming = false,
+                    Duration = "6s",
+                    Tools =
+                    [
+                        new() { Id = "t1", Title = "Read api.ts", Kind = "read", Status = "completed" },
+                        new() { Id = "t2", Title = "Edit api.ts", Kind = "edit", Status = "completed" },
+                    ],
+                    Notes =
+                    [
+                        new() { Text = "Checking api.ts first.", BeforeToolIndex = 0 },
+                        new() { Text = "Found the bug, editing now.", BeforeToolIndex = 1 },
+                    ],
+                },
+            ],
+        });
+
+        var turn = Assert.IsType<ConversationAssistantEntry>(Assert.Single(conv.Entries));
+        Assert.Equal("Final summary.", turn.Text);
+        Assert.Equal(4, turn.WorkSteps.Count);
+        Assert.Equal([ConversationWorkStepKind.Text, ConversationWorkStepKind.Tool, ConversationWorkStepKind.Text, ConversationWorkStepKind.Tool],
+            turn.WorkSteps.Select(s => s.StepKind));
+        // Header counts only the 2 tool steps, never the 2 folded text notes.
+        Assert.Contains("2", turn.WorkHeaderTitle);
+        Assert.DoesNotContain("4", turn.WorkHeaderTitle);
+
+        turn.IsWorkExpanded = true;
+        Assert.NotNull(turn.ExpandedWorkSteps);
+        Assert.Equal("Checking api.ts first.", turn.ExpandedWorkSteps![0].NoteText);
+        Assert.Equal("", turn.ExpandedWorkSteps[0].Verb);
+        Assert.False(turn.ExpandedWorkSteps[0].HasVerb);
+        Assert.True(turn.ExpandedWorkSteps[0].CanExpand);
+    }
+
+    [AvaloniaFact]
+    public void Mobile_live_ticker_slides_rows_upward_identically_to_desktop()
+    {
+        using var conv = CreateStub();
+        var timeline = conv.Timeline;
+        timeline.ApplySnapshot(new AcpSnapshotMessage
+        {
+            ItemId = "s1",
+            Sequence = 1,
+            State = AcpStates.Working,
+            Entries =
+            [
+                new()
+                {
+                    Id = "a1",
+                    Kind = AcpEntryKinds.Assistant,
+                    IsStreaming = true,
+                    Tools =
+                    [
+                        new() { Id = "t1", Title = "File A.cs", Kind = "edit", Status = "completed" },
+                        new() { Id = "t2", Title = "File B.cs", Kind = "edit", Status = "completed" },
+                        new() { Id = "t3", Title = "File C.cs", Kind = "edit", Status = "in_progress" },
+                    ],
+                },
+            ],
+        });
+
+        using var phone = new Phone();
+        var (page, _, _) = OpenDemoConversation(phone);
+
+        var turn = Assert.IsType<ConversationAssistantEntry>(Assert.Single(conv.Entries));
+        var tickerHost = new ContentControl { Content = turn.LiveTicker };
+        var container = new StackPanel();
+        container.DataTemplates.AddRange(page.DataTemplates);
+        container.Children.Add(tickerHost);
+
+        var window = new Window { Width = 390, Height = 300, Content = container };
+        window.Show();
+        try
+        {
+            static bool StepUntil(Func<bool> done, Action? onFrame = null, int milliseconds = 3000)
+            {
+                var end = DateTime.UtcNow.AddMilliseconds(milliseconds);
+                while (DateTime.UtcNow < end)
+                {
+                    Dispatcher.UIThread.RunJobs();
+                    AvaloniaHeadlessPlatform.ForceRenderTimerTick();
+                    Dispatcher.UIThread.RunJobs();
+                    onFrame?.Invoke();
+                    if (done()) return true;
+                    Thread.Sleep(16);
+                }
+                return false;
+            }
+
+            Phone.Pump();
+            window.UpdateLayout();
+
+            var viewport = tickerHost.GetVisualDescendants().OfType<WorkTickerViewport>().Single();
+            Assert.False(viewport.IsRunning);
+            var rowH = viewport.MeasuredRowHeight;
+            Assert.True(rowH > 8);
+            var stepY = rowH + viewport.Spacing;
+            var threeRowHeight = 3 * rowH + 2 * viewport.Spacing;
+            Assert.Equal(threeRowHeight, viewport.Bounds.Height, 1.0);
+
+            // In-place completion of t3 must NOT trigger a slide animation.
+            timeline.Apply(new AcpUpdateMessage
+            {
+                Sequence = 2,
+                State = AcpStates.Working,
+                Upserts =
+                [
+                    new()
+                    {
+                        Id = "a1",
+                        Kind = AcpEntryKinds.Assistant,
+                        IsStreaming = true,
+                        Tools =
+                        [
+                            new() { Id = "t1", Title = "File A.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t2", Title = "File B.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t3", Title = "File C.cs", Kind = "edit", Status = "completed" },
+                        ],
+                    },
+                ],
+            });
+            Assert.False(viewport.IsRunning);
+
+            // New tool t4 arrives -> slides upward identically to desktop, keeping height constant.
+            timeline.Apply(new AcpUpdateMessage
+            {
+                Sequence = 3,
+                State = AcpStates.Working,
+                Upserts =
+                [
+                    new()
+                    {
+                        Id = "a1",
+                        Kind = AcpEntryKinds.Assistant,
+                        IsStreaming = true,
+                        Tools =
+                        [
+                            new() { Id = "t1", Title = "File A.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t2", Title = "File B.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t3", Title = "File C.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t4", Title = "File D.cs", Kind = "edit", Status = "in_progress" },
+                        ],
+                    },
+                ],
+            });
+
+            Assert.True(viewport.IsRunning);
+            Assert.True(viewport.IsExitVisible(0));
+            Assert.Equal("File A.cs", turn.LiveTicker!.Exit0.Target);
+
+            var line0Ys = new List<double>();
+            var exit0Ys = new List<double>();
+            Assert.True(StepUntil(
+                () => !viewport.IsRunning,
+                () =>
+                {
+                    line0Ys.Add(viewport.GetSlotOffsetY(0));
+                    if (viewport.IsExitVisible(0)) exit0Ys.Add(viewport.GetExitOffsetY(0));
+                }));
+
+            Assert.True(line0Ys.Count >= 3, $"expected smooth upward frames on mobile, got {line0Ys.Count}");
+            Assert.Contains(line0Ys, y => y > 0.5 && y < stepY - 0.5);
+            Assert.Contains(exit0Ys, y => y < -0.5 && y > -stepY + 0.5);
+            Assert.False(viewport.IsExitVisible(0));
+            Assert.Equal(threeRowHeight, viewport.Bounds.Height, 1.0);
+            Assert.Equal(0.38, viewport.GetSlotOpacity(0), 0.02);
+            Assert.Equal(0.66, viewport.GetSlotOpacity(1), 0.02);
+            Assert.Equal(1.0, viewport.GetSlotOpacity(2), 0.02);
+
+            // Reduced/Off motion jumps immediately on mobile too.
+            ArcMotion.SetLevel(window, ArcMotionLevel.Off);
+            timeline.Apply(new AcpUpdateMessage
+            {
+                Sequence = 4,
+                State = AcpStates.Working,
+                Upserts =
+                [
+                    new()
+                    {
+                        Id = "a1",
+                        Kind = AcpEntryKinds.Assistant,
+                        IsStreaming = true,
+                        Tools =
+                        [
+                            new() { Id = "t1", Title = "File A.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t2", Title = "File B.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t3", Title = "File C.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t4", Title = "File D.cs", Kind = "edit", Status = "completed" },
+                            new() { Id = "t5", Title = "File E.cs", Kind = "edit", Status = "in_progress" },
+                        ],
+                    },
+                ],
+            });
+            Assert.False(viewport.IsRunning);
+            Assert.False(viewport.IsExitVisible(0));
+            Assert.Equal(0.0, viewport.GetSlotOffsetY(0), 0.5);
+            Assert.Equal("File E.cs", turn.LiveTicker.Line2.Target);
+        }
+        finally
+        {
+            window.Close();
+            Dispatcher.UIThread.RunJobs();
+        }
     }
 
     [AvaloniaFact]
@@ -380,14 +707,17 @@ public class ConversationTests
         vm.CancelCommand.Execute(null);
         Assert.True(Phone.Until(() => vm.State == ConversationState.Ready && hostConv.CancelCount == 1));
 
-        // The conversation "⋯" menu can also jump straight to project files.
+        // The conversation top-right popover menu can jump straight to project files, changes, branches, and sessions.
         var page = phone.Top<ConversationPage>();
-        var overlays = page.FindControl<SessionActionOverlays>("Overlays")!;
+        var overlay = page.FindControl<SessionWorkspaceOverlay>("WorkspaceOverlay")!;
         vm.OpenMenuCommand.Execute(null);
         Phone.Pump();
-        Assert.Contains("浏览文件", overlays.MenuLabels);
-        Assert.Contains("查看改动", overlays.MenuLabels);
-        phone.Shell.ShowFiles(gui.Project, RemoteFolders.WorkspacePathOf(gui));
+        Assert.True(overlay.IsPopoverOpen);
+        Assert.Contains("项目文件管理", vm.WorkspaceMenu.VisibleMenuLabels());
+        Assert.Contains("查看改动", vm.WorkspaceMenu.VisibleMenuLabels());
+        Assert.Contains("分支查看", vm.WorkspaceMenu.VisibleMenuLabels());
+        Assert.Contains("Session 查看", vm.WorkspaceMenu.VisibleMenuLabels());
+        vm.WorkspaceMenu.BrowseFilesCommand.Execute(null);
         Assert.True(Phone.Until(() => phone.Shell.Top is FilesPage));
         var filesVm = phone.Model<FilesViewModel>();
         Assert.True(Phone.Until(() => !filesVm.IsLoading && filesVm.Entries.Any(e => e.Name == "README.md")));
@@ -398,6 +728,179 @@ public class ConversationTests
         phone.Shell.Back();
         Assert.True(Phone.Until(() => phone.Shell.Top is HostPage));
         Assert.True(Phone.Until(() => hostConv.Viewers == 0), "host attachment disposed on detach");
+    }
+
+    [AvaloniaFact]
+    public void New_session_sheet_supports_launching_an_agent_as_gui_and_disables_it_when_unsupported()
+    {
+        using var phone = new Phone();
+        var mac = phone.Workspace.Hosts[0];
+        phone.Shell.ShowHost(mac);
+        Phone.Settle();
+
+        var host = (HostViewModel)phone.Top<HostPage>().DataContext!;
+        host.OpenNewSessionCommand.Execute(null);
+        Phone.Settle();
+
+        var sheet = host.NewSession;
+        Assert.True(sheet.IsOpen);
+        Assert.True(sheet.IsAgent);
+        Assert.True(sheet.CanLaunchAsGui);
+        Assert.False(sheet.LaunchAsGui);
+        Assert.Equal("启动", sheet.StartButtonText);
+
+        sheet.LaunchAsGui = true;
+        Assert.Equal("以 GUI 启动", sheet.StartButtonText);
+        sheet.Prompt = "检查移动端顶部胶囊导航";
+        sheet.CreateCommand.Execute(null);
+        Assert.True(Phone.Until(() => phone.Shell.Top is ConversationPage));
+
+        var convPage = phone.Top<ConversationPage>();
+        var convVm = (ConversationViewModel)convPage.DataContext!;
+        Assert.True(convVm.Session.IsGui);
+        Assert.Equal("检查移动端顶部胶囊导航", convVm.Title);
+
+        // When host does not support GUI conversations, the GUI launch switch is disabled.
+        phone.Shell.Back();
+        Assert.True(Phone.Until(() => phone.Shell.Top is HostPage));
+        phone.Workspace.ConversationsSupported = false;
+        host.OpenNewSessionCommand.Execute(null);
+        Phone.Settle();
+        Assert.False(sheet.CanLaunchAsGui);
+        Assert.False(sheet.LaunchAsGui);
+        Assert.Contains("仅支持终端", sheet.LaunchAsGuiSubtitle);
+    }
+
+    [AvaloniaFact]
+    public async Task Real_protocol_new_session_launches_as_gui_when_requested()
+    {
+        await using var relay = new FakeRelay();
+        await using var studio = await Computer.StartAsync(relay);
+        var octopus = studio.Workspace.AddProject("Octopus", "/home/ada/code/Octopus");
+
+        using var phone = new RealPhone(relay);
+        phone.SignIn(relay);
+        phone.Pair(studio);
+        var hostRow = phone.Model<HostsViewModel>().Online.Single();
+        Assert.True(Phone.Until(() => hostRow.Host.Projects.Count == 1 && hostRow.Host.Agents.Count == 1));
+        Assert.True(hostRow.Host.Agents[0].SupportsAcp);
+
+        hostRow.OpenCommand.Execute(null);
+        Assert.True(Phone.Until(() => phone.Shell.Top is HostPage));
+        var host = phone.Model<HostViewModel>();
+        host.OpenNewSessionCommand.Execute(null);
+        Phone.Settle();
+
+        var sheet = host.NewSession;
+        Assert.True(sheet.CanLaunchAsGui);
+        sheet.LaunchAsGui = true;
+        sheet.Prompt = "用 GUI 跑一次代码评审";
+        sheet.CreateCommand.Execute(null);
+
+        Assert.True(Phone.Until(() => phone.Shell.Top is ConversationPage));
+        Assert.True(studio.Workspace.Created.TryDequeue(out var createdReq));
+        Assert.Equal(ItemSurfaces.Gui, createdReq.Surface);
+        var convVm = phone.Model<ConversationViewModel>();
+        Assert.True(convVm.Session.IsGui);
+        Assert.True(Phone.Until(() => convVm.IsLoaded));
+    }
+
+    [AvaloniaFact]
+    public async Task Entering_and_returning_to_mobile_conversation_keeps_scroll_at_bottom()
+    {
+        await using var relay = new FakeRelay();
+        await using var studio = await Computer.StartAsync(relay);
+        var octopus = studio.Workspace.AddProject("Octopus", "/home/ada/code/Octopus");
+        studio.Workspace.Files["/home/ada/code/Octopus/README.md"] = System.Text.Encoding.UTF8.GetBytes("# Octopus\n");
+        var guiItem = studio.Workspace.AddItem(octopus, "接口文档", "claude", surface: ItemSurfaces.Gui);
+        var hostConv = studio.Workspace.ConversationOf(guiItem.Id);
+
+        using var phone = new RealPhone(relay);
+        phone.SignIn(relay);
+        phone.Pair(studio);
+        phone.Model<HostsViewModel>().Online.Single().OpenCommand.Execute(null);
+        Assert.True(Phone.Until(() => phone.Shell.Top is HostPage));
+        var hostVm = phone.Model<HostViewModel>();
+        Assert.True(Phone.Until(() => hostVm.Host.Projects.Count == 1 && hostVm.Host.Projects[0].Sessions.Count == 1));
+        var session = hostVm.Host.Projects[0].Sessions.Single();
+
+        phone.Shell.ShowSession(session);
+        Assert.True(Phone.Until(() => phone.Shell.Top is ConversationPage));
+        var page = phone.Top<ConversationPage>();
+        var vm = phone.Model<ConversationViewModel>();
+        Assert.True(Phone.Until(() => vm.IsLoaded && vm.Entries.Count == 3), "initial snapshot loaded: " + vm.ErrorText);
+
+        // Resolve the initial permission card so prompts execute onto the timeline instead of queueing.
+        var permission = vm.Entries.OfType<ConversationPermissionEntry>().Single();
+        vm.RespondCommand.Execute(permission.Options.Single(option => option.IsAllow));
+        Assert.True(Phone.Until(() => permission.IsResolved && vm.State == ConversationState.Ready));
+
+        // Append enough multi-line messages (ASCII + CJK) so the timeline overflows substantially on all platforms/fonts.
+        for (var i = 1; i <= 10; i++)
+        {
+            vm.PromptText = $"Round {i} check: verify conversation timeline scroll pinning across desktop and mobile.\nDetail A: re-entering the conversation must land at the very bottom.\nDetail B: returning from a sub-page must also scroll to the bottom.";
+            var before = vm.Entries.Count;
+            vm.SendCommand.Execute(null);
+            Assert.True(Phone.Until(() => !vm.IsSending && vm.Entries.Count > before));
+            if (vm.CanStop)
+            {
+                vm.CancelCommand.Execute(null);
+                Assert.True(Phone.Until(() => vm.State == ConversationState.Ready));
+            }
+            Phone.Pump();
+        }
+
+        var scroller = page.FindControl<ScrollViewer>("TimelineScroll")!;
+        Assert.True(Phone.Until(() => scroller.ScrollBarMaximum.Y > 200),
+            $"Expected overflowing mobile timeline, max={scroller.ScrollBarMaximum.Y}");
+        Phone.Pump();
+        Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0,
+            $"Expected initial/sent timeline at bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+
+        // 1) Scroll up into history, then send a new prompt: must force-scroll back to the very bottom.
+        scroller.Offset = new Avalonia.Vector(0, 40);
+        Phone.Pump();
+        Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y > 100);
+
+        vm.PromptText = "New prompt that must jump back to the very bottom";
+        var beforeSend = vm.Entries.Count;
+        vm.SendCommand.Execute(null);
+        Assert.True(Phone.Until(() => !vm.IsSending && vm.Entries.Count > beforeSend));
+        if (vm.CanStop)
+        {
+            vm.CancelCommand.Execute(null);
+            Assert.True(Phone.Until(() => vm.State == ConversationState.Ready));
+        }
+        Assert.True(Phone.Until(() => scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0),
+            $"Sending while scrolled up must scroll mobile GUI to bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+
+        // 2) Scroll up into history, push another page (Files), and pop back: must return to the very bottom.
+        scroller.Offset = new Avalonia.Vector(0, 40);
+        Phone.Pump();
+        Assert.True(scroller.ScrollBarMaximum.Y - scroller.Offset.Y > 100);
+
+        phone.Shell.ShowFiles(session.Project, RemoteFolders.WorkspacePathOf(session));
+        Assert.True(Phone.Until(() => phone.Shell.Top is FilesPage));
+        phone.Shell.Back();
+        Assert.True(Phone.Until(() => phone.Shell.Top is ConversationPage));
+        Assert.True(Phone.Until(() => scroller.ScrollBarMaximum.Y - scroller.Offset.Y <= 2.0),
+            $"Returning from sub-page must scroll mobile GUI to bottom, offset={scroller.Offset.Y}, max={scroller.ScrollBarMaximum.Y}");
+
+        // 3) Leave conversation completely and re-enter it: host replays the full overflowing history and must land at bottom.
+        var expectedEntries = vm.Entries.Count;
+        scroller.Offset = new Avalonia.Vector(0, 40);
+        Phone.Pump();
+        phone.Shell.Back();
+        Assert.True(Phone.Until(() => phone.Shell.Top is HostPage));
+        Assert.True(Phone.Until(() => hostConv.Viewers == 0));
+
+        phone.Shell.ShowSession(session);
+        Assert.True(Phone.Until(() => phone.Shell.Top is ConversationPage));
+        var reopenedPage = phone.Top<ConversationPage>();
+        Assert.True(Phone.Until(() => reopenedPage.DataContext is ConversationViewModel { IsLoaded: true } reopenedVm && reopenedVm.Entries.Count == expectedEntries));
+        var reopenedScroller = reopenedPage.FindControl<ScrollViewer>("TimelineScroll")!;
+        Assert.True(Phone.Until(() => reopenedScroller.ScrollBarMaximum.Y > 200 && reopenedScroller.ScrollBarMaximum.Y - reopenedScroller.Offset.Y <= 2.0),
+            $"Re-entering mobile GUI must scroll to bottom, offset={reopenedScroller.Offset.Y}, max={reopenedScroller.ScrollBarMaximum.Y}");
     }
 
     [AvaloniaFact]

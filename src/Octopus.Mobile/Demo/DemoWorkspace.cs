@@ -17,8 +17,8 @@ namespace Octopus.Mobile.Demo;
 /// </summary>
 public sealed partial class DemoWorkspace : IRemoteWorkspace
 {
-    private static readonly AgentOption Claude = new("claude", "Claude", "C", "#D97757", ["Fable 5.2", "Opus 5.5", "Sonnet 5.5"], ["低", "中", "高", "极高"]);
-    private static readonly AgentOption Codex = new("codex", "Codex", "X", "#1F9D74", ["GPT-6", "GPT-6 mini"], ["低", "中", "高"]);
+    private static readonly AgentOption Claude = new("claude", "Claude", "C", "#D97757", ["Fable 5.2", "Opus 5.5", "Sonnet 5.5"], ["低", "中", "高", "极高"], SupportsAcp: true);
+    private static readonly AgentOption Codex = new("codex", "Codex", "X", "#1F9D74", ["GPT-6", "GPT-6 mini"], ["低", "中", "高"], SupportsAcp: true);
 
     private readonly Dictionary<string, Func<DemoTerminalConnection>> _screens = new(StringComparer.Ordinal);
     private readonly Dictionary<string, DemoTerminalFactory> _factories = new(StringComparer.Ordinal);
@@ -31,9 +31,9 @@ public sealed partial class DemoWorkspace : IRemoteWorkspace
     public DemoWorkspace(bool localOnly = false)
     {
         var mac = new RemoteHost("mac", "MacBook Pro", HostLink.Lan, isPaired: true) { Agents = [Claude, Codex] };
-        var octopus = Add(mac, "Octopus", "~/code/Octopus");
-        var server = Add(mac, "OctopusServer", "~/code/OctopusServer");
-        var arc = Add(mac, "TKCode.Arc", "~/code/TKCode.Arc");
+        var octopus = Add(mac, "Octopus", "~/code/Octopus", "#5B5BD6");
+        var server = Add(mac, "OctopusServer", "~/code/OctopusServer", "#1F9D74");
+        var arc = Add(mac, "TKCode.Arc", "~/code/TKCode.Arc", "#D97757");
 
         var handshake = Add(octopus, "远程协议握手实现", Claude, "Fable 5.2 · 极高", SessionActivity.Waiting, "要运行 dotnet test 吗？");
         _screens[handshake.Id] = () => new DemoTerminalConnection(
@@ -56,7 +56,7 @@ public sealed partial class DemoWorkspace : IRemoteWorkspace
             DemoScreens.Failed("TKCode.Arc", "运行 tools/terminal/build-ghostty.sh ios-arm64", "zig build 失败：找不到 iOS SDK"), Echo);
 
         var station = new RemoteHost("station", "工作站", HostLink.Relay, isPaired: true) { Agents = [Codex] };
-        var console = Add(station, "web-console", "~/srv/web-console");
+        var console = Add(station, "web-console", "~/srv/web-console", "#3B82D6");
         var migrate = Add(console, "升级数据库迁移", Codex, "GPT-6 · 中", SessionActivity.Idle, null);
         // Runs as a GUI conversation on the computer: the phone shows its details, not a terminal.
         Add(console, "接口文档整理", Codex, "GPT-6 · 高", SessionActivity.Idle, "上一轮写好了 docs/api.md", gui: true);
@@ -126,12 +126,16 @@ public sealed partial class DemoWorkspace : IRemoteWorkspace
         var detail = agent is null
             ? "zsh"
             : string.Join(" · ", new[] { request.Model ?? agent.Models.FirstOrDefault(), request.Effort }.Where(part => !string.IsNullOrEmpty(part)));
-        var session = Add(project, title, agent, detail, agent is not null && prompt is not null ? SessionActivity.Working : SessionActivity.Idle, prompt is null ? null : "正在读代码", workspace);
+        var isGui = agent is not null && agent.SupportsAcp && ConversationsSupported && request.LaunchAsGui == true;
+        var session = Add(project, title, agent, detail, agent is not null && prompt is not null ? SessionActivity.Working : SessionActivity.Idle, prompt is null ? null : "正在读代码", workspace, gui: isGui);
         var folder = workspace is not null ? $"{project.Name} ({workspace.DisplayName})" : project.Name;
-        _screens[session.Id] = agent is null
-            ? () => new DemoTerminalConnection(DemoScreens.Prompt(folder), input => Shell(folder, input))
-            : () => new DemoTerminalConnection(
-                prompt is null ? "> " : DemoScreens.Working(folder, prompt, "正在读代码"), Echo);
+        if (!isGui)
+        {
+            _screens[session.Id] = agent is null
+                ? () => new DemoTerminalConnection(DemoScreens.Prompt(folder), input => Shell(folder, input))
+                : () => new DemoTerminalConnection(
+                    prompt is null ? "> " : DemoScreens.Working(folder, prompt, "正在读代码"), Echo);
+        }
         return Task.FromResult(session);
     }
 
@@ -322,10 +326,11 @@ public sealed partial class DemoWorkspace : IRemoteWorkspace
         return outcome;
     }
 
-    private static RemoteProject Add(RemoteHost host, string name, string path)
+    private static RemoteProject Add(RemoteHost host, string name, string path, string? color = null)
     {
         var project = new RemoteProject(host, host.Id + "/" + name, name, path)
         {
+            Color = color,
             IsGitRepository = true,
             DefaultBranch = "main",
         };

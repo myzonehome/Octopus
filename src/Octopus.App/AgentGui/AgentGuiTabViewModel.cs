@@ -181,7 +181,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     private static readonly ConcurrentDictionary<string, (DateTimeOffset IndexedAt, string[] Files)> SharedWorkspaceFileCache = new(StringComparer.Ordinal);
     private static readonly TimeSpan WorkspaceFileCacheTtl = TimeSpan.FromSeconds(60);
     private const int MaxCachedWorkspaces = 16;
-    private const int StreamFlushIntervalMs = 32;
+    private const int StreamFlushIntervalMs = 60;
 
     private readonly Project _project;
     private readonly ProjectItem _item;
@@ -557,9 +557,13 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     public bool IsBusy => State is AgentGuiState.Connecting or AgentGuiState.Working;
     public bool IsWorking => State == AgentGuiState.Working;
     public bool IsTurnActive => State is AgentGuiState.Working or AgentGuiState.Waiting;
+    public bool HasComposerInput => !string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0;
     public bool CanSend => State is AgentGuiState.Ready or AgentGuiState.Waiting or AgentGuiState.Working
-        && (!string.IsNullOrWhiteSpace(InputText) || Attachments.Count > 0);
+        && HasComposerInput;
     public bool CanSendNow => IsTurnActive && CanSend;
+    public bool ShowComposerLoading => IsTurnActive && !HasComposerInput;
+    public bool CanStopFromComposerButton => ShowComposerLoading && !IsCancelling;
+    public bool CanExecuteComposerAction => CanSend || IsTurnActive;
     public bool ShowEmptyState => Timeline.Count == 0 && !HasErrorBanner && !IsAuthRequired;
     public bool HasTimeline => Timeline.Count > 0;
     public bool HasErrorBanner => !string.IsNullOrWhiteSpace(ErrorBanner);
@@ -824,7 +828,26 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         ResumeQueueCommand.NotifyCanExecuteChanged();
     }
 
-    partial void OnIsCancellingChanged(bool value) => OnPropertyChanged(nameof(StopButtonLabel));
+    partial void OnIsCancellingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(StopButtonLabel));
+        OnPropertyChanged(nameof(CanStopFromComposerButton));
+        OnPropertyChanged(nameof(SendButtonTooltip));
+    }
+
+    private void NotifyComposerActionStateChanged()
+    {
+        OnPropertyChanged(nameof(HasComposerInput));
+        OnPropertyChanged(nameof(CanSend));
+        OnPropertyChanged(nameof(CanSendNow));
+        OnPropertyChanged(nameof(ShowComposerLoading));
+        OnPropertyChanged(nameof(CanStopFromComposerButton));
+        OnPropertyChanged(nameof(CanExecuteComposerAction));
+        OnPropertyChanged(nameof(SendButtonTooltip));
+        SendPromptCommand.NotifyCanExecuteChanged();
+        SendPromptNowCommand.NotifyCanExecuteChanged();
+        ComposerActionCommand.NotifyCanExecuteChanged();
+    }
 
     public event EventHandler<bool>? ScrollToBottomRequested;
     public event EventHandler? FocusComposerRequested;
@@ -837,10 +860,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         OnPropertyChanged(nameof(IsBusy));
         OnPropertyChanged(nameof(IsWorking));
         OnPropertyChanged(nameof(IsTurnActive));
-        OnPropertyChanged(nameof(CanSend));
-        OnPropertyChanged(nameof(CanSendNow));
         OnPropertyChanged(nameof(ShowResumeQueueButton));
-        OnPropertyChanged(nameof(SendButtonTooltip));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ShowReconnect));
         SendPromptCommand.NotifyCanExecuteChanged();
@@ -1073,10 +1093,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         IsCommandPopupOpen = false;
         IsFilePopupOpen = false;
         OnPropertyChanged(nameof(HasAttachments));
-        OnPropertyChanged(nameof(CanSend));
-        OnPropertyChanged(nameof(CanSendNow));
-        SendPromptCommand.NotifyCanExecuteChanged();
-        SendPromptNowCommand.NotifyCanExecuteChanged();
+        NotifyComposerActionStateChanged();
 
         if (text.Length > 0 && (_promptHistory.Count == 0 || _promptHistory[^1] != text))
         {
@@ -1084,6 +1101,20 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         }
         _historyCursor = -1;
         return (text, attached);
+    }
+
+    [RelayCommand(CanExecute = nameof(CanExecuteComposerAction), AllowConcurrentExecutions = true)]
+    public Task ComposerActionAsync()
+    {
+        if (CanSend)
+        {
+            return SendPromptAsync();
+        }
+        if (IsTurnActive)
+        {
+            return CancelTurnAsync();
+        }
+        return Task.CompletedTask;
     }
 
     [RelayCommand(CanExecute = nameof(CanSend), AllowConcurrentExecutions = true)]
@@ -1156,10 +1187,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         }
         InputText = item.Text;
         OnPropertyChanged(nameof(HasAttachments));
-        OnPropertyChanged(nameof(CanSend));
-        OnPropertyChanged(nameof(CanSendNow));
-        SendPromptCommand.NotifyCanExecuteChanged();
-        SendPromptNowCommand.NotifyCanExecuteChanged();
+        NotifyComposerActionStateChanged();
         RefreshQueueState();
         FocusComposerRequested?.Invoke(this, EventArgs.Empty);
     }
@@ -1313,6 +1341,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         var userTurn = new UserTurnItem(text, attached, ReusePrompt);
         var assistantTurn = new AssistantTurnItem(AgentId, AgentName, OpenToolFile, _workspaceCommands is null ? null : OpenToolDiff, OpenToolScript);
         _activeTurn = assistantTurn;
+        EnsureLiveTickTimer();
         PruneFinishedForegroundSubagents();
         Timeline.Add(userTurn);
         Timeline.Add(assistantTurn);
@@ -1395,6 +1424,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
             {
                 _activeTurn = null;
             }
+            SetUi(EnsureLiveTickTimer);
             _isTurnActive = false;
             if (ReferenceEquals(_activeTurnSettled, turnSettled))
             {
@@ -1947,20 +1977,14 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     {
         Attachments.Add(AttachmentChipViewModel.Removable(attachment, RemoveAttachment));
         OnPropertyChanged(nameof(HasAttachments));
-        OnPropertyChanged(nameof(CanSend));
-        OnPropertyChanged(nameof(CanSendNow));
-        SendPromptCommand.NotifyCanExecuteChanged();
-        SendPromptNowCommand.NotifyCanExecuteChanged();
+        NotifyComposerActionStateChanged();
     }
 
     private void RemoveAttachment(AttachmentChipViewModel chip)
     {
         Attachments.Remove(chip);
         OnPropertyChanged(nameof(HasAttachments));
-        OnPropertyChanged(nameof(CanSend));
-        OnPropertyChanged(nameof(CanSendNow));
-        SendPromptCommand.NotifyCanExecuteChanged();
-        SendPromptNowCommand.NotifyCanExecuteChanged();
+        NotifyComposerActionStateChanged();
     }
 
     private void UpdateInlinePickers(string text)
@@ -2351,6 +2375,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
         if (_activeTurn is not null) return _activeTurn;
         var turn = new AssistantTurnItem(AgentId, AgentName, OpenToolFile, _workspaceCommands is null ? null : OpenToolDiff, OpenToolScript);
         _activeTurn = turn;
+        EnsureLiveTickTimer();
         Timeline.Add(turn);
         OnPropertyChanged(nameof(ShowEmptyState));
         OnPropertyChanged(nameof(HasTimeline));
@@ -2722,7 +2747,7 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
     private void EnsureLiveTickTimer()
     {
         if (Application.Current is null || !Dispatcher.UIThread.CheckAccess()) return;
-        var need = HasRunningSubagents || HasRunningBackgroundShells;
+        var need = HasRunningSubagents || HasRunningBackgroundShells || (_activeTurn is { IsStreaming: true });
         if (need && _liveTickTimer is null)
         {
             _liveTickTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
@@ -2745,10 +2770,15 @@ public sealed partial class AgentGuiTabViewModel : ObservableObject, IRecipient<
 
     private void OnLiveTick(object? sender, EventArgs e)
     {
-        if (_disposed || (!HasRunningSubagents && !HasRunningBackgroundShells))
+        var hasActiveTurn = _activeTurn is { IsStreaming: true };
+        if (_disposed || (!HasRunningSubagents && !HasRunningBackgroundShells && !hasActiveTurn))
         {
             StopLiveTickTimer();
             return;
+        }
+        if (hasActiveTurn)
+        {
+            _activeTurn!.TickElapsed();
         }
         var now = DateTimeOffset.Now;
         foreach (var s in Subagents)

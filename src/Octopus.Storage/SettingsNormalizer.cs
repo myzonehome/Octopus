@@ -21,6 +21,7 @@ internal static class SettingsNormalizer
         settings.WorkspaceCleanup ??= new();
         settings.PromptEnhancement ??= new();
         settings.PromptEnhancement.Endpoints ??= [];
+        settings.Experiments ??= new();
         settings.WorkspaceCleanup.InactiveDays = settings.WorkspaceCleanup.InactiveDays <= 0
             ? WorkspaceCleanupSettings.DefaultInactiveDays
             : Math.Clamp(settings.WorkspaceCleanup.InactiveDays, WorkspaceCleanupSettings.MinInactiveDays, WorkspaceCleanupSettings.MaxInactiveDays);

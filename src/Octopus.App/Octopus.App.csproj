@@ -7,6 +7,8 @@
         <RootNamespace>Octopus.App</RootNamespace>
         <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
         <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+        <!-- StartupTrace installs a native SIGHUP handler (records the sender and keeps the app alive). -->
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
         <!-- The optimized AOT publish drops Avalonia's compiled XAML ("No precompiled XAML found" at start). -->
         <UseOptimizedPublish>false</UseOptimizedPublish>
         <!-- Icons are chosen from data (agent icons, item kinds), so compile all of Lucide in. -->
@@ -47,6 +49,7 @@
         <PackageReference Include="TKCode.Arc" />
         <PackageReference Include="TKCode.Arc.Blocks" />
         <PackageReference Include="TKCode.Arc.Dock" />
+        <PackageReference Include="TKCode.Arc.Editor.Controls" />
         <PackageReference Include="TKCode.Arc.Fonts" />
         <PackageReference Include="TKCode.Arc.Highlighting" />
         <PackageReference Include="TKCode.Arc.StreamMark.Mermaid" />
@@ -88,6 +91,8 @@
         <AvaloniaResource Include="Assets/PixelIcons/pixel-icons.json" />
         <!-- Colored VS Code style file and folder icons (see Assets/FileIcons/README.md). -->
         <AvaloniaResource Include="Assets/FileIcons/file-icons.json" />
+        <!-- AI model and provider brand icons from @lobehub/icons (see Assets/ModelIcons/README.md). -->
+        <AvaloniaResource Include="Assets/ModelIcons/model-icons.json" />
         <!-- The window icon and the in-app logo (octopus.ico / .icns are for the exe and an .app bundle, not loaded at run time). -->
         <AvaloniaResource Include="Assets/Icon/*.png" />
     </ItemGroup>
@@ -95,6 +100,8 @@
     <ItemGroup>
         <!-- Built-in plugins ship as plain packages next to the executable (design/plugins/03-清单与生命周期.md §5). -->
         <None Include="BuiltinPlugins/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
+        <!-- Built-in plugin authoring Skill bundle for offline fallback & atomic overwrite installation. -->
+        <None Include="BuiltinSkills/**/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest"/>
     </ItemGroup>
 
     <!-- Development runs: the forwarder's framework-dependent build goes next to the app. A release publishes the

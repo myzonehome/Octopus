@@ -38,6 +38,7 @@ public partial class ExplorerPanelView : UserControl
 
     private Window? _window;
     private bool _settingProject;
+    private bool _trailingInsetScheduled;
 
     static ExplorerPanelView()
     {
@@ -58,9 +59,11 @@ public partial class ExplorerPanelView : UserControl
         InitializeComponent();
         DataContext = Model;
         ApplyTrailingInset();
-        // The room changes with the panel's width, and the tabs' width with the chosen tab (its name shows) and the counts.
+        // The room changes with the panel's width, and the tabs' worst-case width with the available options and counts.
+        // Skip intermediate label-reveal frames so switching tabs never makes the tab bar jump between rows.
         SizeChanged += (_, _) => ApplyTrailingInset();
-        Tabs.SizeChanged += (_, _) => ApplyTrailingInset();
+        Tabs.SizeChanged += (_, _) => { if (!Tabs.IsLabelAnimating) ApplyTrailingInset(); };
+        Tabs.LabelsSettled += ScheduleTrailingInset;
         Model.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(ExplorerPanelViewModel.IsGitRepository) or nameof(ExplorerPanelViewModel.IsSshProject) or nameof(ExplorerPanelViewModel.IsHostProject)) SyncOptions();
@@ -96,9 +99,8 @@ public partial class ExplorerPanelView : UserControl
         if (Model.IsSshProject) wanted.Add(_tunnelsOption);
         else if (!Model.IsHostProject) wanted.Add(_sessionsOption);
         if (Tabs.Items.Cast<object>().SequenceEqual(wanted)) return;
-        Tabs.Items.Clear();
-        foreach (var option in wanted) Tabs.Items.Add(option);
-        Tabs.SelectedValue = Model.TabKey;
+        Tabs.ReplaceOptions(wanted, Model.TabKey);
+        ScheduleTrailingInset();
     }
 
     /// <summary>
@@ -115,18 +117,23 @@ public partial class ExplorerPanelView : UserControl
         ArcDesignTokenKind countColor = ArcDesignTokenKind.TextMuted)
     {
         var name = AppLangResources.Get(label);
-        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 5 };
+        var content = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 0 };
         content.Children.Add(new LucideIcon { Kind = icon, Size = 15, VerticalAlignment = VerticalAlignment.Center });
-        content.Children.Add(new TextBlock
+        content.Children.Add(new TabLabelReveal
         {
-            Text = name,
             VerticalAlignment = VerticalAlignment.Center,
-            [!TextBlock.IsVisibleProperty] = CompiledBinding.Create(isSelected, source: Model),
+            [!TabLabelReveal.IsExpandedProperty] = CompiledBinding.Create(isSelected, source: Model),
+            Child = new TextBlock
+            {
+                Text = name,
+                VerticalAlignment = VerticalAlignment.Center,
+            },
         });
         if (count is not null && hasCount is not null)
         {
             var number = new TextBlock
             {
+                Margin = new Thickness(5, 0, 0, 0),
                 VerticalAlignment = VerticalAlignment.Center,
                 FontWeight = FontWeight.SemiBold,
                 [!TextBlock.TextProperty] = CompiledBinding.Create(count, source: Model),
@@ -178,20 +185,39 @@ public partial class ExplorerPanelView : UserControl
     public event EventHandler<Octopus.App.Files.DiffTabRequest>? DiffRequested;
 
     /// <summary>
-    /// The tabs stay in the top row while they fit left of the trailing inset, with a small gap; otherwise they take a row
-    /// of their own under it, so the corner the window floats over the panel never covers one of them.
+    /// The tabs stay in the top row while their widest tab state fits left of the trailing inset, with a small gap;
+    /// otherwise they take a row of their own under it, so the corner the window floats over the panel never covers
+    /// one of them and switching tabs never makes the tab bar jump between rows.
     /// </summary>
     private void ApplyTrailingInset()
     {
-        var need = Tabs.Margin.Left + Tabs.DesiredSize.Width + TabsGap;
-        var fits = Bounds.Width <= 0 || need <= Bounds.Width - TrailingInset;
+        var tabsWidth = Tabs.ComputeMaxSettledWidth();
+        var need = Tabs.Margin.Left + tabsWidth + TabsGap;
+        var available = Bounds.Width - TrailingInset;
+        var isWrapped = Grid.GetRow(Tabs) == 1;
+        var fits = Bounds.Width <= 0 || (isWrapped ? need + WrapHysteresis <= available : need <= available);
         var row = fits ? 0 : 1;
         if (Grid.GetRow(Tabs) == row) return;
         Grid.SetRow(Tabs, row);
         Tabs.Margin = fits ? new Thickness(8, 0, 0, 0) : new Thickness(8, 0, 0, 6);
     }
 
+    private void ScheduleTrailingInset()
+    {
+        if (_trailingInsetScheduled) return;
+        _trailingInsetScheduled = true;
+        LayoutUpdated += OnTrailingInsetLayoutUpdated;
+    }
+
+    private void OnTrailingInsetLayoutUpdated(object? sender, EventArgs e)
+    {
+        _trailingInsetScheduled = false;
+        LayoutUpdated -= OnTrailingInsetLayoutUpdated;
+        ApplyTrailingInset();
+    }
+
     private const double TabsGap = 6;
+    private const double WrapHysteresis = 8;
 
     /// <summary>
     /// Points the panel at a project (or its active worktree). The folder is read again only when the folder, host or
@@ -232,6 +258,11 @@ public partial class ExplorerPanelView : UserControl
 
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
+        if (_trailingInsetScheduled)
+        {
+            _trailingInsetScheduled = false;
+            LayoutUpdated -= OnTrailingInsetLayoutUpdated;
+        }
         if (_window is not null) _window.Activated -= OnWindowActivated;
         _window = null;
         base.OnDetachedFromVisualTree(e);

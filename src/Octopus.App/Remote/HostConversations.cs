@@ -201,11 +201,18 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
     /// </summary>
     private sealed class Conversation
     {
-        // Properties that move on their own while a turn runs (a clock, a rotating phrase) or only fold the view here.
+        // Properties that move on their own while a turn runs (a clock, live ticker) or only fold the view here.
         private static readonly HashSet<string> Ignored = new(StringComparer.Ordinal)
         {
-            nameof(AssistantTurnItem.LiveElapsedText), nameof(AssistantTurnItem.HasLiveElapsed), nameof(AssistantTurnItem.LiveStatusText),
-            nameof(AssistantTurnItem.IsThoughtExpanded), nameof(AssistantTurnItem.IsExplorationExpanded), nameof(AssistantTurnItem.IsCommandsExpanded),
+            nameof(AssistantTurnItem.LiveElapsedText), nameof(AssistantTurnItem.HasLiveElapsed),
+            nameof(AssistantTurnItem.IsWorkExpanded), nameof(AssistantTurnItem.ExpandedWorkSteps),
+            nameof(AssistantTurnItem.ShowLiveTicker), nameof(AssistantTurnItem.LiveTicker),
+            nameof(AssistantTurnItem.WorkHeaderTitle), nameof(AssistantTurnItem.WorkHeaderCounts),
+            nameof(AssistantTurnItem.HasWorkHeaderCounts), nameof(AssistantTurnItem.WorkHeaderFailedText),
+            nameof(AssistantTurnItem.HasWorkFailures), nameof(AssistantTurnItem.WorkHeaderDurationText),
+            nameof(AssistantTurnItem.HasWorkHeaderDuration), nameof(AssistantTurnItem.ShowWaitingBadge),
+            nameof(AssistantTurnItem.HasWorkArea), nameof(AssistantTurnItem.CanExpandWork),
+            nameof(AssistantTurnItem.WorkStepCount),
             nameof(PlanApprovalCardItem.IsFeedbackOpen), nameof(PlanApprovalCardItem.FeedbackText),
         };
 
@@ -549,6 +556,7 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
             Duration = entry.Duration,
             Attachments = entry.Attachments,
             Tools = entry.Tools,
+            Notes = entry.Notes,
             Plan = entry.Plan,
             Permission = entry.Permission,
             Question = entry.Question,
@@ -712,6 +720,7 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
                 ErrorText = Blank(turn.ErrorText),
                 Duration = Blank(turn.DurationText),
                 Tools = turn.ToolCalls.Count > 0 ? [.. turn.ToolCalls.Select(ToTool)] : null,
+                Notes = ExtractWorkNotes(turn),
                 Plan = turn.PlanEntries.Count > 0 ? [.. turn.PlanEntries.Select(p => new AcpPlanEntryMessage { Content = p.Content, Status = p.Status })] : null,
             },
             PermissionCardItem card => new AcpEntryMessage
@@ -790,6 +799,31 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
         };
     }
 
+    private static List<AcpWorkNoteMessage>? ExtractWorkNotes(AssistantTurnItem turn)
+    {
+        List<AcpWorkNoteMessage>? notes = null;
+        var toolIndex = 0;
+        var steps = turn.WorkSteps;
+        for (var i = 0; i < steps.Count; i++)
+        {
+            var step = steps[i];
+            if (step.StepKind == WorkStepKind.Tool)
+            {
+                toolIndex++;
+            }
+            else if (step.StepKind == WorkStepKind.Text && !string.IsNullOrWhiteSpace(step.NoteText))
+            {
+                notes ??= [];
+                notes.Add(new AcpWorkNoteMessage
+                {
+                    Text = Tail(step.NoteText, AcpLimits.TextChars)!,
+                    BeforeToolIndex = toolIndex,
+                });
+            }
+        }
+        return notes;
+    }
+
     /// <summary>
     /// Makes an entry that is still too large for a message smaller, least useful first: long outputs and diffs of
     /// its tools, then what it thought, then the start of its answer.
@@ -804,6 +838,10 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
         }
         if (SerializeLength(entry) <= EntryBudget) return entry;
         entry.Thought = Tail(entry.Thought, 2 * 1024);
+        foreach (var note in entry.Notes ?? [])
+        {
+            note.Text = Tail(note.Text, 1024) ?? "";
+        }
         foreach (var tool in entry.Tools ?? [])
         {
             tool.Output = null;
@@ -813,6 +851,7 @@ internal sealed class HostConversations(ITabContentRegistry tabs)
         if (SerializeLength(entry) <= EntryBudget) return entry;
         entry.Text = Tail(entry.Text, 8 * 1024);
         entry.Thought = null;
+        entry.Notes = null;
         if (entry.Tools is { Count: > 100 } tools) entry.Tools = tools[^100..];
         return entry;
     }
