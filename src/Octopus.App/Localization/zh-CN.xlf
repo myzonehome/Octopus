@@ -327,6 +327,7 @@
     <unit id="RevealInFileManager"><segment><source>Show in file manager</source><target state="translated">在文件管理器中显示</target></segment></unit>
     <unit id="OpenInVsCode"><segment><source>Open in VS Code</source><target state="translated">在 VS Code 中打开</target></segment></unit>
     <unit id="OpenInVsCodeFailed"><segment><source>Could not open in VS Code</source><target state="translated">无法在 VS Code 中打开</target></segment></unit>
+    <unit id="OpenInVsCodeMissing"><segment><source>{0} was not found. Install VS Code with its "Add to PATH" option, or set the path of its code command under Settings › Terminal › VS Code command.</source><target state="translated">找不到 {0}。安装 VS Code 时请勾选“添加到 PATH”，或在“设置 › 终端 › VS Code 命令”里填写 code 的完整路径。</target></segment></unit>
     <unit id="OpenInVsCodeFailedClose"><segment><source>OK</source><target state="translated">好</target></segment></unit>
     <unit id="RemoveProject"><segment><source>Remove project</source><target state="translated">移除项目</target></segment></unit>
     <unit id="RemoveProjectTitle"><segment><source>Remove "{0}"?</source><target state="translated">移除“{0}”？</target></segment></unit>

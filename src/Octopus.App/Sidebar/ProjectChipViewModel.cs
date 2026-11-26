@@ -34,7 +34,8 @@ public sealed partial class ProjectChipViewModel(
     Action<ProjectChipViewModel, string?>? moveToGroup = null,
     Func<ProjectChipViewModel, Task>? newGroup = null,
     IReadOnlyList<ProjectAgentAccountMenu>? agentAccounts = null,
-    Action<ProjectChipViewModel, ProjectAgentAccountSelection>? setAgentAccount = null) : ObservableObject
+    Action<ProjectChipViewModel, ProjectAgentAccountSelection>? setAgentAccount = null,
+    Action<ProjectChipViewModel>? openInVsCode = null) : ObservableObject
 {
     public string Id { get; } = project.Id;
     public string Name { get; } = project.Name;
@@ -107,6 +108,7 @@ public sealed partial class ProjectChipViewModel(
     [RelayCommand] private void Select() => select(this);
     [RelayCommand] private void Rename() => rename(this);
     [RelayCommand(CanExecute = nameof(CanReveal))] private void Reveal() => reveal(this);
+    [RelayCommand(CanExecute = nameof(CanReveal))] private void OpenInVsCode() => openInVsCode?.Invoke(this);
     [RelayCommand] private Task RemoveAsync() => remove(this);
     [RelayCommand] private Task ChangeIconAsync() => changeIcon?.Invoke(this) ?? Task.CompletedTask;
     /// <summary>Moves the project into the group with this id; null takes it out of its group.</summary>
@@ -119,7 +121,7 @@ public sealed partial class ProjectChipViewModel(
         if (selection is not null) setAgentAccount?.Invoke(this, selection);
     }
 
-    /// <summary>A folder on an SSH host has nothing to show in this computer's file manager.</summary>
+    /// <summary>A folder on an SSH host has nothing to show in this computer's file manager, and its path means nothing to VS Code here.</summary>
     private bool CanReveal => !IsRemote;
 
     private static string InitialOf(string name) =>

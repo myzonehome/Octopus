@@ -351,6 +351,7 @@ public enum AppLangResourceKind
     RevealInFileManager,
     OpenInVsCode,
     OpenInVsCodeFailed,
+    OpenInVsCodeMissing,
     OpenInVsCodeFailedClose,
     RemoveProject,
     RemoveProjectTitle,

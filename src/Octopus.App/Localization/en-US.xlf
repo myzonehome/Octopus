@@ -327,6 +327,7 @@
     <unit id="RevealInFileManager"><segment><source>Show in file manager</source></segment></unit>
     <unit id="OpenInVsCode"><segment><source>Open in VS Code</source></segment></unit>
     <unit id="OpenInVsCodeFailed"><segment><source>Could not open in VS Code</source></segment></unit>
+    <unit id="OpenInVsCodeMissing"><segment><source>{0} was not found. Install VS Code with its "Add to PATH" option, or set the path of its code command under Settings › Terminal › VS Code command.</source></segment></unit>
     <unit id="OpenInVsCodeFailedClose"><segment><source>OK</source></segment></unit>
     <unit id="RemoveProject"><segment><source>Remove project</source></segment></unit>
     <unit id="RemoveProjectTitle"><segment><source>Remove "{0}"?</source></segment></unit>

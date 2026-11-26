@@ -71,6 +71,14 @@
                             HorizontalAlignment="Right"
                             AutomationProperties.Name="{l:AppLangResource SettingsPasteConfirm}" />
             </arc:SettingsRow>
+            <arc:SettingsRow Header="{l:AppLangResource SettingsVsCode}"
+                             Description="{l:AppLangResource SettingsVsCodeHint}">
+                <arc:Input Text="{Binding VsCode, Mode=TwoWay}"
+                           Size="Small"
+                           Label="{l:AppLangResource SettingsVsCode}"
+                           IsLabelVisible="False"
+                           Placeholder="{l:AppLangResource SettingsVsCodePlaceholder}" />
+            </arc:SettingsRow>
         </arc:SettingsGroup>
     </StackPanel>
 </UserControl>

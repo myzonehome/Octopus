@@ -42,6 +42,11 @@ public partial class ProjectChipView : UserControl
             });
         }
         entries.Add(new(AppLangResources.Get(AppLangResourceKind.RevealInFileManager), chip.RevealCommand, Glyph: ArcIcons.FolderOpen));
+        entries.Add(new(AppLangResources.Get(AppLangResourceKind.OpenInVsCode), chip.OpenInVsCodeCommand)
+        {
+            // VS Code's own mark, as the file names it recognizes get it.
+            Icon = new FileIconView { IconKey = FileIconStore.Instance.ResolveKey("settings.vscode", isDirectory: false), Size = 16 },
+        });
         entries.Add(new(AppLangResources.Get(AppLangResourceKind.RemoveProject), chip.RemoveCommand, IsDestructive: true, SeparatorBefore: true, Glyph: ArcIcons.Trash2));
         MenuFactory.Attach(ChipButton, entries);
     }

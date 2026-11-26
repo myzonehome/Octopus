@@ -24,6 +24,7 @@ public sealed partial class ProjectRailViewModel : ObservableObject
     private readonly IItemOpener _opener;
     private readonly IDialogService _dialogs;
     private readonly IFileOpener _files;
+    private readonly IVsCodeService _vsCode;
     private readonly ISettingsNavigator _navigator;
     private readonly IProjectIconStore? _icons;
     private readonly IItemActivityService? _activity;
@@ -41,6 +42,7 @@ public sealed partial class ProjectRailViewModel : ObservableObject
         IItemOpener opener,
         IDialogService dialogs,
         IFileOpener files,
+        IVsCodeService vsCode,
         ISettingsNavigator navigator,
         IProjectIconStore? icons = null,
         IItemActivityService? activity = null,
@@ -61,6 +63,7 @@ public sealed partial class ProjectRailViewModel : ObservableObject
         _opener = opener;
         _dialogs = dialogs;
         _files = files;
+        _vsCode = vsCode;
         _navigator = navigator;
         _projects.Changed += OnProjectsChanged;
         if (_accounts is not null) _accounts.Changed += (_, _) => UiContext.Run(Rebuild);
@@ -186,7 +189,7 @@ public sealed partial class ProjectRailViewModel : ObservableObject
             }
             var chip = new ProjectChipViewModel(
                 project, project.Id == current, Select, Rename, Reveal, RemoveAsync, ChangeIconAsync, _icons?.Load(project.Image),
-                choices, MoveToGroup, NewGroupAsync, BuildAgentAccountMenus(project), SetProjectAgentAccount)
+                choices, MoveToGroup, NewGroupAsync, BuildAgentAccountMenus(project), SetProjectAgentAccount, OpenInVsCode)
             {
                 IsWorking = IsWorking(project),
                 NeedsInput = NeedsInput(project),
@@ -233,6 +236,26 @@ public sealed partial class ProjectRailViewModel : ObservableObject
     }
 
     private void Reveal(ProjectChipViewModel chip) => _files.Reveal(chip.Path);
+
+    /// <summary>VS Code opens the workspace of the active tab, its file, or else the project's folder; what went wrong is said.</summary>
+    private async void OpenInVsCode(ProjectChipViewModel chip)
+    {
+        if (_projects.Projects.FirstOrDefault(p => p.Id == chip.Id) is not { } project)
+        {
+            return;
+        }
+        var target = _vsCode.Target(project);
+        var result = target is null
+            ? VsCodeLaunchResult.Failed(project.Path)
+            : await _vsCode.LaunchAsync(target);
+        if (!result.Success)
+        {
+            await _dialogs.ConfirmAsync(
+                AppLangResources.Get(AppLangResourceKind.OpenInVsCodeFailed),
+                result.Error ?? project.Path,
+                AppLangResources.Get(AppLangResourceKind.OpenInVsCodeFailedClose));
+        }
+    }
 
     private async Task RemoveAsync(ProjectChipViewModel chip)
     {

@@ -117,6 +117,9 @@ public interface IExecutableLocator
 
 public sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError, bool TimedOut)
 {
+    /// <summary>Why the program could not be started (missing, not executable); null when it ran.</summary>
+    public string? StartError { get; init; }
+
     public bool Succeeded => !TimedOut && ExitCode == 0;
 }
 

@@ -9,7 +9,7 @@ using TKCode.Arc.Localization;
 
 namespace Octopus.App.Settings.Terminal;
 
-/// <summary>The terminal page: shell, font, font size and scrollback. Text is saved once typing pauses.</summary>
+/// <summary>The terminal page: shell, font, font size, scrollback and the VS Code command. Text is saved once typing pauses.</summary>
 public sealed partial class TerminalSettingsViewModel : ObservableObject, IDisposable
 {
     public const string AutoShell = "auto";
@@ -18,11 +18,15 @@ public sealed partial class TerminalSettingsViewModel : ObservableObject, IDispo
     private readonly ISettingsStore _settings;
     private readonly Debouncer _shellDebounce = new();
     private readonly Debouncer _fontDebounce = new();
+    private readonly Debouncer _vsCodeDebounce = new();
 
     private string _shellMode;
 
     [ObservableProperty]
     private string _shellPath;
+
+    [ObservableProperty]
+    private string _vsCode;
 
     [ObservableProperty]
     private string _fontFamily;
@@ -45,6 +49,7 @@ public sealed partial class TerminalSettingsViewModel : ObservableObject, IDispo
         // A saved path shows as "custom" until the scan below finds it among the installed shells.
         _shellMode = string.IsNullOrWhiteSpace(terminal.Shell) ? AutoShell : CustomShell;
         _shellPath = terminal.Shell ?? "";
+        _vsCode = terminal.VsCode ?? "";
         _fontFamily = terminal.FontFamily ?? "";
         _detectedShellText = AppLangResources.Get(AppLangResourceKind.SettingsShellDetecting);
         BuildShellModes();
@@ -237,11 +242,18 @@ public sealed partial class TerminalSettingsViewModel : ObservableObject, IDispo
         _settings.Update(s => s.Terminal.FontFamily = font);
     });
 
+    partial void OnVsCodeChanged(string value) => _vsCodeDebounce.Schedule(() =>
+    {
+        var command = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        _settings.Update(s => s.Terminal.VsCode = command);
+    });
+
     /// <summary>Writes the text edits that are still waiting for typing to pause.</summary>
     public void FlushPending()
     {
         _shellDebounce.Flush();
         _fontDebounce.Flush();
+        _vsCodeDebounce.Flush();
     }
 
     private void SaveShell()

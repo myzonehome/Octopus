@@ -60,11 +60,11 @@ public sealed class ProcessRunner : IProcessRunner
         try
         {
             if (!process.Start())
-                return new ProcessResult(-1, "", "The process did not start.", false);
+                return new ProcessResult(-1, "", "The process did not start.", false) { StartError = "The process did not start." };
         }
         catch (Exception e) when (e is Win32Exception or InvalidOperationException or IOException)
         {
-            return new ProcessResult(-1, "", e.Message, false);
+            return new ProcessResult(-1, "", e.Message, false) { StartError = e.Message };
         }
 
         // Read both pipes concurrently: a child that fills one pipe while we wait on the other would block forever.
