@@ -23,7 +23,11 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
 
     private string _defaultEndpointId = PromptEnhancementSources.SessionEndpointId;
 
-    public string DefaultEndpointId
+    /// <summary>
+    /// Bound by a Select whose value is cleared (set to null) while it reloads its options; the property itself is
+    /// never null, so code reading it need not guard against that.
+    /// </summary>
+    public string? DefaultEndpointId
     {
         get => _defaultEndpointId;
         set
@@ -124,18 +128,25 @@ public sealed partial class PromptEnhancementSettingsViewModel : ObservableObjec
         OnPropertyChanged(nameof(HasEndpoints));
     }
 
+    /// <summary>
+    /// Queued: the page also listens for settings changes and refreshes on the next loop turn; adding here and now
+    /// would let that refresh reload the Select's options before this card is in the list.
+    /// </summary>
     [RelayCommand]
     private Task AddAsync()
     {
         var endpoint = new PromptEnhancementEndpoint { Id = Guid.NewGuid().ToString("N") };
-        _settings.Update(s =>
+        UiThread(() =>
         {
-            s.PromptEnhancement.Endpoints.Add(endpoint);
-            // The first endpoint the person adds becomes the default: configuring one means wanting to use it.
-            if (s.PromptEnhancement.Endpoints.Count == 1) s.PromptEnhancement.DefaultEndpointId = endpoint.Id;
+            _settings.Update(s =>
+            {
+                s.PromptEnhancement.Endpoints.Add(endpoint);
+                // The first endpoint the person adds becomes the default: configuring one means wanting to use it.
+                if (s.PromptEnhancement.Endpoints.Count == 1) s.PromptEnhancement.DefaultEndpointId = endpoint.Id;
+            });
+            Endpoints.Add(CreateCard(endpoint));
+            Refresh();
         });
-        Endpoints.Add(CreateCard(endpoint));
-        Refresh();
         return Task.CompletedTask;
     }
 

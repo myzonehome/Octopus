@@ -12,6 +12,7 @@ using Octopus.App.Settings.PromptEnhancement;
 using Octopus.Core.Settings;
 using Octopus.Platform;
 using Octopus.Storage;
+using TKCode.Arc;
 
 namespace Octopus.App.Tests;
 
@@ -361,5 +362,73 @@ public class PromptEnhancementSettingsTests
         Assert.False(card.IsTesting);
         Assert.False(card.TestFailed);
         vm.Dispose();
+    }
+
+    /// <summary>
+    /// The Select clears its bound value while it reloads options. That happens after the page is shown (a scroll
+    /// area only builds its content on screen), by which time the view model is no longer "loading".
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Reloading_the_default_choices_with_the_page_shown_keeps_the_saved_default()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+        var select = OpenPage(vm);
+        Assert.Equal(card.Id, select.SelectedValue);
+
+        vm.DefaultChoices.Clear();
+        vm.DefaultChoices.Add(new SelectOption(PromptEnhancementSources.SessionEndpointId, "跟随智能体接口"));
+        vm.DefaultChoices.Add(new SelectOption(card.Id, "Office"));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Assert.False(string.IsNullOrEmpty(vm.DefaultEndpointId));
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    [AvaloniaFact]
+    public async Task Refresh_after_the_options_were_cleared_as_a_page_loads_keeps_the_default()
+    {
+        var (vm, settings, _, _) = Create();
+        await vm.AddCommand.ExecuteAsync(null);
+        var card = Assert.Single(vm.Endpoints);
+
+        // What an already-created prompt enhancement page sees when it is first scrolled into view.
+        vm.DefaultChoices.Clear();
+        vm.DefaultChoices.Add(new SelectOption(PromptEnhancementSources.SessionEndpointId, "跟随智能体接口"));
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+    }
+
+    /// <summary>
+    /// What a Select does while its options reload: it drops the pick and writes the empty value back into the two-way
+    /// binding. The property must not take that for a request to make the first option the default.
+    /// </summary>
+    [AvaloniaFact]
+    public async Task Adding_the_first_endpoint_with_the_page_shown_keeps_it_the_default()
+    {
+        var (vm, settings, _, _) = Create();
+        var select = OpenPage(vm);
+
+        await vm.AddCommand.ExecuteAsync(null);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        var card = Assert.Single(vm.Endpoints);
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+        Assert.Equal(card.Id, vm.DefaultEndpointId);
+        Assert.Equal(card.Id, select.SelectedValue);
+    }
+
+    [AvaloniaFact]
+    public void The_bound_null_a_select_writes_back_is_not_a_choice()
+    {
+        var (vm, settings, _, _) = Create();
+        vm.AddCommand.Execute(null);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+        var card = Assert.Single(vm.Endpoints);
+
+        vm.DefaultEndpointId = null;
+
+        Assert.Equal(card.Id, settings.Current.PromptEnhancement.DefaultEndpointId);
+        Assert.Equal(card.Id, vm.DefaultEndpointId);
     }
 }
